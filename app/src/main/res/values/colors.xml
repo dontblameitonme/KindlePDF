@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 冷启动窗口 / 启动屏背景：深色石板蓝，与图标背景一致，消除点开瞬间白屏闪 -->
+    <color name="launch_background">#1B2733</color>
+</resources>
