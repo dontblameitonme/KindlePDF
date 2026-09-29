@@ -840,6 +840,48 @@ class Paginator {
                     }
                 }
 
+                // 代码块/框线图内部闭合子方框防孤立断页：若当前行是子方框顶边（或紧邻其前的竖向连接线），且整个子方框能在一页内放下但剩余空间不足，则整体移至下一页
+                if (entry.isCodeBlock && currentElements.isNotEmpty() &&
+                    currentY > params.marginTop + codePadY + effectiveLineHeight * 2
+                ) {
+                    val curText = line.segments.joinToString("") { it.text }.trim()
+                    val isConnectorBeforeBox = curText in setOf("│", "▼", "▲") && lineIdx + 1 < lines.size && run {
+                        val nextText = lines[lineIdx + 1].segments.joinToString("") { it.text }.trim()
+                        nextText.length >= 3 && (nextText.first() == '┌' || nextText.first() == '╭') &&
+                            (nextText.last() == '┐' || nextText.last() == '╮')
+                    }
+                    val isBoxTop = curText.length >= 3 &&
+                        (curText.first() == '┌' || curText.first() == '╭') &&
+                        (curText.last() == '┐' || curText.last() == '╮')
+
+                    if (isConnectorBeforeBox || isBoxTop) {
+                        val searchLimit = minOf(lines.size - 1, lineIdx + 18)
+                        var boxBottomIdx = -1
+                        for (k in (lineIdx + 1)..searchLimit) {
+                            val kText = lines[k].segments.joinToString("") { it.text }.trim()
+                            if (kText.length >= 3 &&
+                                (kText.first() == '└' || kText.first() == '╰') &&
+                                (kText.last() == '┘' || kText.last() == '╯')
+                            ) {
+                                boxBottomIdx = k
+                                break
+                            }
+                        }
+                        if (boxBottomIdx != -1) {
+                            val neededLines = boxBottomIdx - lineIdx + 1
+                            if (currentY + effectiveLineHeight * neededLines > maxBottom &&
+                                effectiveLineHeight * neededLines <= (maxBottom - params.marginTop - codePadY * 2)
+                            ) {
+                                flushBlockSliceDecorations(currentY)
+                                newPage()
+                                currentY += codePadY
+                                sliceStartY = currentY
+                                sliceHasLines = false
+                            }
+                        }
+                    }
+                }
+
                 // Page break if line doesn't fit
                 if (currentY + effectiveLineHeight > maxBottom && currentElements.isNotEmpty()) {
                     flushBlockSliceDecorations(currentY)
@@ -1190,18 +1232,25 @@ class TypesettingEngine(
     }
 
     /**
-     * 代码块与 ASCII / Unicode 框线图（如决策树、餐盘比例图、流程图）自适应排版引擎：
+     * 代码块与 ASCII / Unicode 框线图（决策树、生理机制流程图、营养餐盘图、阶梯图）Kindle 窄屏重排与自适应排版引擎：
      *
-     * 核心设计：
-     * 1. **ASCII 框线图右边界自动对齐修正（`normalizeAsciiBoxes`）**：
-     *    手写 Markdown 框线图在中英混排时极易出现作者少算或多算空格（如顶框 `┌───┐` 宽 50 列，
-     *    而内部文字行 `│ ... │` 宽 58 列，导致右侧竖线 `│` 参差错位）。
-     *    引擎自动识别连续的单栏框线块，统计块内最宽行的半角列数，自动补齐顶/中/底横框线 `─` 并对齐每行末尾的 `│`。
-     * 2. **东亚半角/全角严格网格定位（0.5em / 1.0em Monospace Grid）**：
-     *    按半角列宽（`halfEm = codeFontSize * 0.5f`）逐字符计算精确网格坐标，空白符只推进列游标不绘制字形，
-     *    彻底消除比例字体空格宽度偏差。
-     * 3. **基于最长行宽度的字号自适应缩放（Auto-Fit Font Scaling）**：
-     *    统计整个代码块的最大半角列数 `maxCols`，超出版心宽度时自动等比缩小字号（下限 `5.0pt`），确保宽幅流程图单行完整呈现。
+     * 核心设计（解决 6 英寸 Kindle 窄屏上宽幅文本图被盲目等比微缩至 5pt 导致无法阅读的问题）：
+     * 1. **窄屏最佳可读列宽基准（`target1DCols = 45` 半角列，约 22.5 个汉字宽）**：
+     *    在 6 英寸 Kindle（`availableWidth = 222pt`，正文字号 `12pt`）上，45 半角列对应字号约 **`9.4pt`（正文 0.78x~0.82x）**，
+     *    视觉清晰度与正文和表格完全一致。
+     * 2. **单栏闭合框线图框内智能折行与右边框对齐（`reflowSingleColumnBoxes`）**：
+     *    对 `┌───┐ ... │ ... │ ... └───┘` 形式的单栏知识框（包括带上下箭头连接符 `▲`/`┴` 的证据金字塔等），
+     *    自动将框内超长文本按 `target1DCols - 3` 列宽折行（自动保持 `│  ` 树枝竖线与列表悬挂缩进），
+     *    并在折行后的每一行左右两侧补齐連続不断的 `│` 边框线与顶底 `─` 横线。
+     * 3. **双栏并列图表的窄屏纵向重排（2-Column Reflow）**：
+     *    - 并列双栏树状表（如水分收支平衡表）：自动拆分为上下串联的两个独立单栏树状块；
+     *    - 并列双框对照图（如细胞内外液钠钾泵双框 `┌───┐ ◄──► ┌───┐`）：自动重排为上框 + 中间连接符 + 下框；
+     *    - 超宽双连等式分式（如 `INQ = ─── = ───`）：自动拆分为上下两行等式分式。
+     * 4. **树状图/流程图悬挂缩进折行（`wrapTreeOrPlainLine`）**：
+     *    对含 `├─`、`└─`、`│`、`──►` 的流程与树状图，优先在箭头 `──►`/`→` 前断行，
+     *    折行后续行自动保留左侧活动的竖向树枝干线 `│` 并对齐于正文起始列，同时保护英文单词/数值单位与中文避头尾标点。
+     * 5. **真二维图形（嵌套谷物解剖框、抛物线坐标图、金字塔旁注图）无损列压缩与旁注折行**：
+     *    在不破坏二维几何结构的前提下，自动剔除全列重复的多余空白/横线列，并对图外说明文字或右侧旁注执行局部折行。
      */
     private fun layoutCodeBlock(
         block: Block.CodeBlock,
@@ -1214,28 +1263,30 @@ class TypesettingEngine(
             .split('\n')
             .map { it.replace("\t", "    ") }
 
-        val rawLines = normalizeAsciiBoxes(initialLines)
+        val padX = 3.0f
+        val innerWidth = (availableWidth - padX * 2f).coerceAtLeast(40f)
+        val defaultCodeSize = baseFontSize * 0.80f
+        // 按约 0.78x 正文字号计算单栏流程图/知识框的目标半角列数（Kindle 默认 12pt 下约为 45 列，对应 ~9.4pt）
+        val target1DCols = (innerWidth / (baseFontSize * 0.78f * 0.5f)).toInt().coerceIn(36, 52)
+
+        val rawLines = optimizeDiagramLinesForKindle(initialLines, target1DCols)
 
         val maxCols = rawLines.maxOfOrNull { line ->
-            line.sumOf { c -> ChineseTypography.eastAsianColWidth(c) }
+            colWidth(line)
         }?.coerceAtLeast(1) ?: 1
-
-        val padX = (baseFontSize * 0.45f).coerceAtLeast(4f)
-        val innerWidth = (availableWidth - padX * 2f).coerceAtLeast(40f)
-        val defaultCodeSize = baseFontSize * 0.82f
 
         // 预留 +1 半角列（0.5em），容纳行尾 1.0em 宽度的右框线字符（如 ┐、│、┘）
         val neededCols = maxCols + 1
         val idealFontSize = innerWidth / (neededCols * 0.5f)
-        val codeFontSize = minOf(defaultCodeSize, idealFontSize).coerceAtLeast(5.0f)
+        val codeFontSize = minOf(defaultCodeSize, idealFontSize).coerceAtLeast(6.5f)
         val halfEm = codeFontSize * 0.5f
         val maxColsPerLine = (innerWidth / halfEm).toInt().coerceAtLeast(8)
 
         val resultLines = mutableListOf<LineBreaker.Line>()
+        val gridLockChars = "┌─┐│└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝╠╣╦╩╬▲▼◄►→←↑↓"
 
         for (rawLine in rawLines) {
             if (rawLine.isBlank()) {
-                // 保留空行高度
                 resultLines.add(
                     LineBreaker.Line(
                         segments = listOf(
@@ -1258,10 +1309,10 @@ class TypesettingEngine(
             var col = 0
             var currentSegs = mutableListOf<LineBreaker.LineSegment>()
             var maxLineX = padX
+            var minNextX = padX
 
             for (ch in rawLine) {
                 val wCols = ChineseTypography.eastAsianColWidth(ch)
-                // 仅当单行极端超长（即便缩到 5.0pt 仍超出页面宽度）时才安全折行
                 if (col + wCols > maxColsPerLine && currentSegs.isNotEmpty()) {
                     resultLines.add(
                         LineBreaker.Line(
@@ -1274,11 +1325,18 @@ class TypesettingEngine(
                     currentSegs = mutableListOf()
                     col = 0
                     maxLineX = padX
+                    minNextX = padX
                 }
 
                 if (ch != ' ') {
                     val safeChar = measurer.resolveSupportedChar(ch, bold = false)
-                    val charX = padX + col * halfEm
+                    val gridX = padX + col * halfEm
+                    val isGridStruct = ch in gridLockChars || safeChar in gridLockChars
+                    val charX = if (isGridStruct) {
+                        gridX
+                    } else {
+                        maxOf(gridX, minNextX)
+                    }
                     currentSegs.add(
                         LineBreaker.LineSegment(
                             text = safeChar.toString(),
@@ -1288,7 +1346,13 @@ class TypesettingEngine(
                             italic = false
                         )
                     )
-                    maxLineX = charX + wCols * halfEm
+                    val actualW = measurer.measureChar(safeChar, codeFontSize, bold = false)
+                    minNextX = if (isGridStruct) {
+                        gridX + wCols * halfEm
+                    } else {
+                        charX + actualW
+                    }
+                    maxLineX = maxOf(charX + wCols * halfEm, minNextX)
                 }
                 col += wCols
             }
@@ -1308,88 +1372,607 @@ class TypesettingEngine(
         return Paginator.BlockLines(
             lines = resultLines,
             isCodeBlock = true,
-            customLineHeight = codeFontSize * 1.35f
+            customLineHeight = codeFontSize * 1.34f
         )
     }
 
+    private fun colWidth(s: String): Int =
+        s.sumOf { c -> ChineseTypography.eastAsianColWidth(c) }
+
+    private fun isDiagramWordOrUnitChar(ch: Char): Boolean =
+        ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in "._+-/~%～㎡℃μgαβγω"
+
     /**
-     * 自动对齐 ASCII 框线图的右边框：
-     * 针对以 `┌...┐` 开始、`└...┘` 结束的闭合框线块，若其内部为单栏框（不含 `┬┴┼` 分栏），
-     * 自动按该框内最宽行的半角列数统一补齐横线 `─` 与每行末尾 `│` 前的空格，消除手写 Markdown 空格计数误差。
+     * 按给定的续行前缀 `contPrefix` 与最大半角列数 `maxCols` 对单行文本执行智能折行：
+     * - 优先在流程箭头（`──►`、`→`）前断行；
+     * - 保护西文单词、数字区间与剂量单位（如 `200㎡`、`pH 6.0～7.0`、`400 μg/d`）不被从中劈断；
+     * - 遵守中文避头尾标点禁则。
      */
-    private fun normalizeAsciiBoxes(lines: List<String>): List<String> {
-        val out = lines.toMutableList()
+    private fun wrapDiagramLineWithPrefix(
+        text: String,
+        contPrefix: String,
+        maxCols: Int
+    ): List<String> {
+        if (colWidth(text) <= maxCols) return listOf(text)
+        val out = mutableListOf<String>()
+        var cur = text
+        val arrowRegex = Regex("""\s*(?=[─═]+►|→)""")
+
+        while (colWidth(cur) > maxCols) {
+            var w = 0
+            var limitIdx = 0
+            for (idx in cur.indices) {
+                val cw = ChineseTypography.eastAsianColWidth(cur[idx])
+                if (w + cw > maxCols) break
+                w += cw
+                limitIdx = idx + 1
+            }
+            if (limitIdx <= contPrefix.length) {
+                limitIdx = (contPrefix.length + 1).coerceAtMost(cur.length)
+            }
+
+            var bestIdx = limitIdx
+            val minIdx = maxOf(contPrefix.length + 3, (limitIdx * 0.52f).toInt())
+
+            // 1) 若行内后半段存在流程箭头 ──► 或 →，优先在箭头前折行
+            var arrowPos = -1
+            for (m in arrowRegex.findAll(cur.substring(0, limitIdx))) {
+                if (m.range.first >= minIdx) {
+                    arrowPos = m.range.first
+                }
+            }
+            if (arrowPos != -1) {
+                bestIdx = arrowPos
+            } else {
+                // 2) 防止劈断连续英文单词/数字/单位
+                if (bestIdx < cur.length &&
+                    bestIdx > 0 &&
+                    isDiagramWordOrUnitChar(cur[bestIdx - 1]) &&
+                    isDiagramWordOrUnitChar(cur[bestIdx])
+                ) {
+                    var wb = bestIdx - 1
+                    while (wb > minIdx && isDiagramWordOrUnitChar(cur[wb - 1])) {
+                        wb--
+                    }
+                    if (wb > minIdx) {
+                        bestIdx = wb
+                    }
+                }
+                // 3) 避尾：行末不留左括号/左引号
+                while (bestIdx > minIdx && cur[bestIdx - 1] in "（“《【[(") {
+                    bestIdx--
+                }
+                // 4) 避头：下一行行首不留句读点号或右括号/右引号
+                while (bestIdx > minIdx && bestIdx < cur.length && cur[bestIdx] in "，。；：、！？）”》】])%,.;:!?") {
+                    bestIdx--
+                }
+            }
+
+            val head = cur.substring(0, bestIdx).trimEnd()
+            val tail = cur.substring(bestIdx).trimStart()
+            out.add(head)
+            if (tail.isEmpty()) {
+                cur = ""
+                break
+            }
+            cur = contPrefix + tail
+        }
+        if (cur.isNotBlank()) {
+            out.add(cur)
+        }
+        return out
+    }
+
+    /**
+     * 对树状图（`├─`、`└─`、`│`）与普通流程行执行带树枝延续的悬挂缩进折行。
+     */
+    private fun wrapTreeOrPlainLine(line: String, maxCols: Int): List<String> {
+        val t = line.trim()
+        if (line.startsWith("   ") && t.startsWith("【") && t.endsWith("】") && colWidth(t) <= maxCols) {
+            val pad = ((maxCols - colWidth(t)) / 2).coerceAtLeast(0)
+            return listOf(" ".repeat(pad) + t)
+        }
+        if (colWidth(line) <= maxCols) return listOf(line)
+
+        val normalizedLine = if (line.startsWith("  ") && t.startsWith("【") && t.endsWith("】")) t else line
+
+        // 若单行包含 `──┬──►` 分叉，在分叉前拆行以对齐后续 `├──►`
+        val splitTeeMatch = Regex("""^(\s*\S.*?\s+)──┬(──►.*)$""").matchEntire(normalizedLine)
+        if (splitTeeMatch != null && colWidth(normalizedLine) > maxCols) {
+            val headPart = splitTeeMatch.groupValues[1].trimEnd()
+            val branchPart = "      ├" + splitTeeMatch.groupValues[2]
+            return wrapTreeOrPlainLine(headPart, maxCols) + wrapTreeOrPlainLine(branchPart, maxCols)
+        }
+
+        val treePrefixRegex = Regex("""^([ │]*)(?:([├└┌])([─]+►?\s*)|\s*)((?:\d+\.|[①-⑩]|★|◆|•|-)\s*)?""")
+        val mTree = treePrefixRegex.find(normalizedLine)
+        var contPrefix = "    "
+        if (mTree != null) {
+            val bars = mTree.groupValues[1]
+            val branch = mTree.groupValues[2]
+            val dashes = mTree.groupValues[3]
+            val marker = mTree.groupValues[4]
+            contPrefix = when (branch) {
+                "├" -> bars + "│" + " ".repeat(colWidth(dashes) + colWidth(marker))
+                "└", "┌" -> bars + " ".repeat(1 + colWidth(dashes) + colWidth(marker))
+                else -> bars + " ".repeat(colWidth(marker))
+            }
+        }
+        if (colWidth(contPrefix) == 0) {
+            val leadSpaces = normalizedLine.takeWhile { it == ' ' }.length
+            contPrefix = " ".repeat(maxOf(leadSpaces + 2, 4))
+        }
+        if (colWidth(contPrefix) > maxCols / 3) {
+            val firstBar = contPrefix.indexOf('│')
+            contPrefix = if (firstBar in 0..11) {
+                " ".repeat(firstBar) + "│   "
+            } else {
+                "    "
+            }
+        }
+        return wrapDiagramLineWithPrefix(normalizedLine, contPrefix, maxCols)
+    }
+
+    /**
+     * 对真二维图表行执行无损垂直列压缩：
+     * 若某一半角列 `c` 在所有二维行中均为可伸缩填充符（空格 `' '` 或横线 `'─'`/`'-'`），
+     * 且与前一保留列 `prevC` 在每一行上的字符完全相同，则同步剔除该列，使二维框/坐标轴整体等比收紧而不错位。
+     */
+    private fun compact2DRows(lines: List<String>, is2DFlags: List<Boolean>): List<String> {
+        val rows2D = lines.filterIndexed { idx, _ -> is2DFlags[idx] }
+        val maxW = rows2D.maxOfOrNull { colWidth(it) } ?: 0
+        if (maxW <= 45 || rows2D.isEmpty()) return lines
+
+        val grid = ArrayList<ArrayList<Char?>>(rows2D.size)
+        for (ln in rows2D) {
+            val row = ArrayList<Char?>(maxW + 2)
+            for (ch in ln) {
+                val w = ChineseTypography.eastAsianColWidth(ch)
+                row.add(ch)
+                if (w == 2) row.add(null)
+            }
+            while (row.size < maxW) {
+                row.add(' ')
+            }
+            grid.add(row)
+        }
+
+        val keptCols = ArrayList<Int>(maxW)
+        keptCols.add(0)
+        for (c in 1 until maxW) {
+            val prevC = keptCols.last()
+            var canRemove = true
+            for (r in grid.indices) {
+                val chCur = grid[r][c]
+                val chPrev = grid[r][prevC]
+                if (chCur == null || (chCur != ' ' && chCur != '─' && chCur != '-') || chCur != chPrev) {
+                    canRemove = false
+                    break
+                }
+            }
+            if (!canRemove) {
+                keptCols.add(c)
+            }
+        }
+
+        val out = ArrayList<String>(lines.size)
+        var idx2D = 0
+        for (i in lines.indices) {
+            if (!is2DFlags[i]) {
+                out.add(lines[i])
+            } else {
+                val row = grid[idx2D++]
+                val sb = StringBuilder()
+                for (c in keptCols) {
+                    val cell = row[c]
+                    if (cell != null) sb.append(cell)
+                }
+                out.add(sb.toString().trimEnd())
+            }
+        }
+        return out
+    }
+
+    /**
+     * 针对 Kindle 窄屏优化代码块/框线图行序列。
+     */
+    private fun optimizeDiagramLinesForKindle(initialLines: List<String>, target1DCols: Int): List<String> {
+        var lines = initialLines
+
+        // 1) 剥离整块公共前导空格
+        val nonEmpty = lines.filter { it.isNotBlank() }
+        if (nonEmpty.isNotEmpty()) {
+            val minLead = nonEmpty.minOf { ln -> ln.takeWhile { it == ' ' }.length }
+            if (minLead >= 2) {
+                lines = lines.map { ln -> if (ln.length >= minLead) ln.substring(minLead) else ln }
+            }
+        }
+
+        // 2a) 并列双栏树状表重排（如水分收支平衡表：同行出现两个 ├─ / └─ 分支且无闭合方框）
+        val twoBranchRegex = Regex("""[├└]─""")
+        val twoColTreeLines = lines.count { twoBranchRegex.findAll(it).count() >= 2 }
+        val hasBoxCorners = lines.any { ln -> ln.any { it in "┌┐└┘" } }
+        if (twoColTreeLines >= 2 && !hasBoxCorners) {
+            val headerOut = mutableListOf<String>()
+            val leftCol = mutableListOf<String>()
+            val rightCol = mutableListOf<String>()
+            var inCols = false
+            val secondColSplitRegex = Regex("""\s{3,}(?=【|[├└]─)""")
+            for (ln in lines) {
+                val t = ln.trim()
+                val matchSec = secondColSplitRegex.findAll(ln).firstOrNull { it.range.first >= 10 }
+                if (matchSec != null) {
+                    inCols = true
+                    val leftStr = ln.substring(0, matchSec.range.first).trimEnd()
+                        .replace(Regex(""" {3,}(?=：|:)"""), " ")
+                    val rightStr = "  " + ln.substring(matchSec.range.last + 1).trim()
+                        .replace(Regex(""" {3,}(?=：|:)"""), " ")
+                    leftCol.add(leftStr)
+                    rightCol.add(rightStr)
+                } else if (inCols && ln.startsWith(" ".repeat(16)) && (t.startsWith("├") || t.startsWith("└"))) {
+                    rightCol.add("  " + t.replace(Regex(""" {3,}(?=：|:)"""), " "))
+                } else if (!inCols) {
+                    headerOut.add(ln)
+                } else {
+                    leftCol.add(ln.replace(Regex(""" {3,}(?=：|:)"""), " "))
+                }
+            }
+            lines = headerOut + leftCol + listOf("") + rightCol
+        }
+
+        // 2b) 双连横式分式方程重排（如 INQ = ─── = ───）
+        val fracRearranged = mutableListOf<String>()
+        var k = 0
+        val eqDoubleBarRegex = Regex("""^(\s*\S+\s*=\s*[─]{4,})(\s*=\s*)([─]{4,})\s*$""")
+        val twoPartsRegex = Regex("""^(\s*\S+)\s{3,}(\S.*)$""")
+        while (k < lines.size) {
+            if (k + 2 < lines.size && eqDoubleBarRegex.matches(lines[k + 1])) {
+                val mNum = twoPartsRegex.matchEntire(lines[k])
+                val mDen = twoPartsRegex.matchEntire(lines[k + 2])
+                if (mNum != null && mDen != null) {
+                    val n1 = mNum.groupValues[1].trim()
+                    val d1 = mDen.groupValues[1].trim()
+                    val n2 = mNum.groupValues[2].trim()
+                    val d2 = mDen.groupValues[2].trim()
+                    fracRearranged.add("         $n1")
+                    fracRearranged.add("  INQ = " + "─".repeat(maxOf(colWidth(n1), colWidth(d1)) + 2))
+                    fracRearranged.add("         $d1")
+                    fracRearranged.add("")
+                    val barW2 = minOf(target1DCols - 6, maxOf(colWidth(n2), colWidth(d2)))
+                    fracRearranged.add("      $n2")
+                    fracRearranged.add("    = " + "─".repeat(barW2))
+                    fracRearranged.add("      $d2")
+                    k += 3
+                    continue
+                }
+            }
+            fracRearranged.add(lines[k])
+            k++
+        }
+        lines = fracRearranged
+
+        // 2c) 并列双框对照图重排（如细胞内外液钠钾泵双框 ┌───┐   ┌───┐）
+        var sbsStart = -1
+        var sbsEnd = -1
+        val topTwinBoxRegex = Regex("""^\s*┌[─]+┐\s+┌[─]+┐\s*$""")
+        val botTwinBoxRegex = Regex("""^\s*└[─]+┘\s+└[─]+┘\s*$""")
+        for (idxL in lines.indices) {
+            if (topTwinBoxRegex.matches(lines[idxL])) {
+                sbsStart = idxL
+                for (idxE in (idxL + 1) until lines.size) {
+                    if (botTwinBoxRegex.matches(lines[idxE])) {
+                        sbsEnd = idxE
+                        break
+                    }
+                }
+                break
+            }
+        }
+        if (sbsStart != -1 && sbsEnd != -1) {
+            val leftBox = mutableListOf<String>()
+            val rightBox = mutableListOf<String>()
+            val midLabels = mutableListOf<String>()
+            val twinRowRegex = Regex("""^\s*([┌│└].*?[┐│┘])\s*(.*?)\s*([┌│└].*?[┐│┘])\s*$""")
+            for (j in sbsStart..sbsEnd) {
+                val mRow = twinRowRegex.matchEntire(lines[j])
+                if (mRow != null) {
+                    leftBox.add(mRow.groupValues[1])
+                    val mid = mRow.groupValues[2].trim()
+                    if (mid.isNotEmpty()) midLabels.add(mid)
+                    rightBox.add(mRow.groupValues[3])
+                }
+            }
+            val connText = if (midLabels.isNotEmpty()) midLabels.joinToString(" ") else "◄──►"
+            val dualArrowRegex = Regex("""^\s*▲\s+▲\s*$""")
+            val cleanedAfter = lines.subList(sbsEnd + 1, lines.size).map { aln ->
+                if (dualArrowRegex.matches(aln)) "        ▲" else aln
+            }
+            lines = lines.subList(0, sbsStart) +
+                leftBox +
+                listOf("            ▲  $connText  ▼") +
+                rightBox +
+                cleanedAfter
+        }
+
+        // 3) 单栏闭合框线块（┌───┐ ... └───┘）框内折行与右边框对齐
+        val reflowed = mutableListOf<String>()
         var i = 0
-        while (i < out.size) {
-            val trimmedStart = out[i].trim()
-            if (trimmedStart.startsWith('┌') && trimmedStart.endsWith('┐')) {
-                // 向下寻找匹配的 └...┘
+        var hasAnyReflowedBox = false
+        val innerPrefixRegex = Regex("""^(\s*(?:[├└]─+\s*|\d+\.\s*|[①-⑩]\s*|-\s*|★\s*)?)""")
+        while (i < lines.size) {
+            val t = lines[i].trim()
+            if (t.startsWith('┌') && t.endsWith('┐')) {
                 var endIdx = -1
-                var allBoxRows = true
-                var hasMultiCol = false
-                for (j in i until out.size) {
-                    val t = out[j].trim()
-                    if (t.isEmpty()) {
-                        allBoxRows = false
+                var validSingle = true
+                for (j in i until lines.size) {
+                    val tj = lines[j].trim()
+                    if (tj.isEmpty()) {
+                        validSingle = false
                         break
                     }
-                    val firstC = t.first()
-                    val lastC = t.last()
-                    if (firstC !in "┌├└│" || lastC !in "┐┤┘│") {
-                        allBoxRows = false
+                    val fc = tj.first()
+                    val lc = tj.last()
+                    if (fc !in "┌├└│" || lc !in "┐┤┘│") {
+                        validSingle = false
                         break
                     }
-                    if (t.any { it in "┬┴┼" }) {
-                        hasMultiCol = true
+                    val inner = tj.substring(1, tj.length - 1)
+                    val isHoriz = fc in "┌├└" && lc in "┐┤┘" && inner.all { it in "─-▲▼┴┬" }
+                    if (isHoriz) {
+                        if (inner.count { it in "▲▼┴┬" } > 1) {
+                            validSingle = false
+                            break
+                        }
+                    } else {
+                        val cleaned = inner.replaceFirst(Regex("""^\s*[├└]─+\s*"""), "")
+                        if (cleaned.any { it in "┌┐└┘│┬┴┼" }) {
+                            validSingle = false
+                            break
+                        }
                     }
-                    if (firstC == '└' && lastC == '┘') {
+                    if (fc == '└' && lc == '┘') {
                         endIdx = j
                         break
                     }
                 }
 
-                if (allBoxRows && endIdx > i && !hasMultiCol) {
-                    val leadingSpaces = out[i].takeWhile { it == ' ' }
-                    // 计算每一行去掉行尾边框符与尾随空格后的最小所需半角列数
-                    var targetCols = 0
-                    for (j in i..endIdx) {
-                        val t = out[j].trim()
-                        val firstC = t.first()
-                        val lastC = t.last()
-                        val isHorizRule = firstC in "┌├└" && lastC in "┐┤┘" &&
-                            t.substring(1, t.length - 1).all { it == '─' || it == '-' }
-                        val rowCols = if (isHorizRule) {
-                            t.sumOf { ChineseTypography.eastAsianColWidth(it) }
-                        } else {
-                            val inner = t.substring(1, t.length - 1).trimEnd(' ')
-                            1 + inner.sumOf { ChineseTypography.eastAsianColWidth(it) } + 1 + 1
-                        }
-                        if (rowCols > targetCols) targetCols = rowCols
-                    }
+                if (validSingle && endIdx > i) {
+                    hasAnyReflowedBox = true
+                    val maxInner = (target1DCols - 3).coerceAtLeast(16)
+                    data class BoxRowItem(val isHoriz: Boolean, val fc: Char, val lc: Char, val conn: Char?, val text: String)
+                    val expanded = mutableListOf<BoxRowItem>()
+                    var actualMaxInner = 0
 
                     for (j in i..endIdx) {
-                        val t = out[j].trim()
-                        val firstC = t.first()
-                        val lastC = t.last()
-                        val isHorizRule = firstC in "┌├└" && lastC in "┐┤┘" &&
-                            t.substring(1, t.length - 1).all { it == '─' || it == '-' }
-                        out[j] = if (isHorizRule) {
-                            val dashCount = (targetCols - 2).coerceAtLeast(1)
-                            leadingSpaces + firstC + "─".repeat(dashCount) + lastC
+                        val tj = lines[j].trim()
+                        val fc = tj.first()
+                        val lc = tj.last()
+                        val inner = tj.substring(1, tj.length - 1)
+                        val isHoriz = fc in "┌├└" && lc in "┐┤┘" && inner.all { it in "─-▲▼┴┬" }
+                        if (isHoriz) {
+                            val conn = inner.firstOrNull { it in "▲▼┴┬" }
+                            expanded.add(BoxRowItem(true, fc, lc, conn, ""))
                         } else {
-                            val inner = t.substring(1, t.length - 1).trimEnd(' ')
-                            val innerCols = inner.sumOf { ChineseTypography.eastAsianColWidth(it) }
-                            val padSpaces = (targetCols - 2 - innerCols).coerceAtLeast(1)
-                            leadingSpaces + firstC + inner + " ".repeat(padSpaces) + lastC
+                            var rawIn = inner.trimEnd(' ')
+                            if (colWidth(rawIn) > maxInner) {
+                                rawIn = rawIn.replace(Regex(""" {3,}(?=[─═]+►|→)"""), " ")
+                                if (rawIn.startsWith("   ")) {
+                                    rawIn = "  " + rawIn.trimStart(' ')
+                                }
+                            }
+                            val pIn = innerPrefixRegex.find(rawIn)?.groupValues?.get(1) ?: "  "
+                            var cInd = if ('├' in pIn) {
+                                pIn.replace(Regex("""├[─]+""")) { m -> "│" + " ".repeat(m.value.length - 1) }
+                            } else {
+                                " ".repeat(colWidth(pIn))
+                            }
+                            if (colWidth(cInd) < 2 || colWidth(cInd) > maxInner / 3) {
+                                cInd = "   "
+                            }
+                            val wLines = wrapDiagramLineWithPrefix(rawIn, cInd, maxInner)
+                            for (wl in wLines) {
+                                actualMaxInner = maxOf(actualMaxInner, colWidth(wl))
+                                expanded.add(BoxRowItem(false, fc, lc, null, wl))
+                            }
+                        }
+                    }
+
+                    val boxCols = target1DCols
+                    val dCnt = (boxCols - 2).coerceAtLeast(1)
+                    for (item in expanded) {
+                        if (item.isHoriz) {
+                            if (item.conn == null) {
+                                reflowed.add("${item.fc}${"─".repeat(dCnt)}${item.lc}")
+                            } else {
+                                val ld = dCnt / 2
+                                val rd = (dCnt - 1 - ld).coerceAtLeast(0)
+                                reflowed.add("${item.fc}${"─".repeat(ld)}${item.conn}${"─".repeat(rd)}${item.lc}")
+                            }
+                        } else {
+                            val pad = (boxCols - 2 - colWidth(item.text)).coerceAtLeast(1)
+                            reflowed.add("${item.fc}${item.text}${" ".repeat(pad)}${item.lc}")
                         }
                     }
                     i = endIdx + 1
                     continue
                 }
             }
+            if (hasAnyReflowedBox && t in setOf("│", "▼", "▲") && lines[i].length > target1DCols / 3) {
+                val centerCol = 1 + (target1DCols - 2).coerceAtLeast(1) / 2
+                reflowed.add(" ".repeat(centerCol) + t)
+                i++
+                continue
+            }
+            reflowed.add(lines[i])
             i++
         }
-        return out
+        lines = reflowed
+
+        // 4) 判定剩余块是否包含固定二维图形行
+        val multiSpaceColRegex = Regex("""\S {6,}(?![─═]*[►>→]|[├└]─)\S""")
+        val leadBarsRegex = Regex("""^\s*(?:│\s*)+""")
+        val is2DLine = lines.map { ln ->
+            val t = ln.trim()
+            when {
+                t.isEmpty() -> false
+                t.any { it in "╭╮╰╯" } -> true
+                t.first() in "┌├└│" && t.last() in "┐┤┘│" -> colWidth(ln) > target1DCols
+                t.any { it in "┐┘" } -> true
+                multiSpaceColRegex.containsMatchIn(ln.replaceFirst(leadBarsRegex, "")) -> true
+                else -> false
+            }
+        }
+
+        if (is2DLine.any { it }) {
+            // 4a) 左侧金字塔方框 + 右侧垂直轴旁注（如食品安全风险金字塔）
+            val boxPlusRightRegex = Regex("""^(\s*[┌├│└][^│]+[┐┤┘│])(\s+[▲│▼]\s+)(.*)$""")
+            val boxPlusMatches = lines.map { boxPlusRightRegex.matchEntire(it) }
+            if (boxPlusMatches.count { it != null } >= 4) {
+                val target24 = 56
+                val wrapped24 = mutableListOf<String>()
+                for (idx in lines.indices) {
+                    val ln = lines[idx]
+                    val m = boxPlusMatches[idx]
+                    if (m != null && colWidth(ln) > target24) {
+                        val leftBox = m.groupValues[1]
+                        val midArrow = m.groupValues[2]
+                        val rightTxt = m.groupValues[3]
+                        val availR = (target24 - colWidth(leftBox) - colWidth(midArrow)).coerceAtLeast(14)
+                        val rWrapped = wrapDiagramLineWithPrefix(rightTxt, "  ", availR)
+                        wrapped24.add(leftBox + midArrow + rWrapped.first())
+                        val leadSp = leftBox.takeWhile { it == ' ' }.length
+                        val innerSp = (colWidth(leftBox.trim()) - 2).coerceAtLeast(1)
+                        val blankLeft = " ".repeat(leadSp) + "│" + " ".repeat(innerSp) + "│"
+                        val contMid = midArrow.replace('▲', '│').replace('▼', '│')
+                        for (rw in rWrapped.drop(1)) {
+                            wrapped24.add(blankLeft + contMid + rw)
+                        }
+                    } else if (m == null && colWidth(ln) > target24) {
+                        wrapped24.addAll(wrapTreeOrPlainLine(ln, target24))
+                    } else {
+                        wrapped24.add(ln)
+                    }
+                }
+                lines = wrapped24
+            } else if (lines.any { ln -> ln.any { it in "╭╮╰╯" } }) {
+                // 4b) 曲线坐标图（如骨密度抛物线）：收紧右侧过长虚线并折行右侧长旁注，再做二维列压缩
+                val targetCurve = 56
+                val curveOut = mutableListOf<String>()
+                val curveRightNoteRegex = Regex("""^(\s*│.*?[╮╯]\s*)(.+)$""")
+                val axisLeadRegex = Regex("""^(\s*│)""")
+                for (ln in lines) {
+                    if ("- - - -" in ln && colWidth(ln) > targetCurve) {
+                        var s = ln
+                        while (colWidth(s) > targetCurve && (s.endsWith('-') || s.endsWith(' '))) {
+                            s = s.dropLast(1)
+                        }
+                        curveOut.add(s.trimEnd())
+                    } else if ('│' in ln && '★' in ln && colWidth(ln) > targetCurve) {
+                        val ln2 = ln.replace(Regex("""(│)\s{6,}(★)"""), "$1    $2")
+                        curveOut.addAll(wrapDiagramLineWithPrefix(ln2, "   │    ", targetCurve))
+                    } else if (ln.any { it in "╭╮╰╯" } && colWidth(ln) > targetCurve) {
+                        val mC = curveRightNoteRegex.matchEntire(ln)
+                        if (mC != null) {
+                            val cPref = mC.groupValues[1]
+                            val cTxt = mC.groupValues[2]
+                            val availC = (targetCurve - colWidth(cPref)).coerceAtLeast(16)
+                            val cwLines = wrapDiagramLineWithPrefix(cTxt, "  ", availC)
+                            curveOut.add(cPref + cwLines.first())
+                            val axisLead = axisLeadRegex.find(ln)?.groupValues?.get(1) ?: "   │"
+                            val padToTxt = " ".repeat((colWidth(cPref) - colWidth(axisLead)).coerceAtLeast(2))
+                            for (cwl in cwLines.drop(1)) {
+                                curveOut.add(axisLead + padToTxt + cwl)
+                            }
+                        } else {
+                            curveOut.add(ln)
+                        }
+                    } else if (!ln.any { it in "╭╮╰╯┴►" } && colWidth(ln) > targetCurve) {
+                        curveOut.addAll(wrapTreeOrPlainLine(ln, targetCurve))
+                    } else {
+                        curveOut.add(ln)
+                    }
+                }
+                val flagsCurve = curveOut.map { ln ->
+                    val t = ln.trim()
+                    t.isNotEmpty() && !(t.startsWith("【") && t.endsWith("】") && !t.contains("   "))
+                }
+                lines = compact2DRows(curveOut, flagsCurve)
+            } else {
+                // 4c) 通用二维块：对二维图形行执行无损垂直列压缩，非二维说明行按二维最大宽度折行
+                val compacted = compact2DRows(lines, is2DLine)
+                val max2DW = compacted.filterIndexed { idx, _ -> is2DLine[idx] }
+                    .maxOfOrNull { colWidth(it) } ?: target1DCols
+                val wrapW = maxOf(max2DW, target1DCols)
+                val newLines = mutableListOf<String>()
+                for (idx in compacted.indices) {
+                    val ln = compacted[idx]
+                    if (!is2DLine[idx] && colWidth(ln) > wrapW) {
+                        newLines.addAll(wrapTreeOrPlainLine(ln, wrapW))
+                    } else {
+                        newLines.add(ln)
+                    }
+                }
+                lines = newLines
+            }
+        } else {
+            // 5) 纯单栏块（单栏闭合框 + 树状图 / 流程图 / 步骤清单）：
+            //    合并作者手写硬换行续行、收紧过宽树缩进（如 > 12 列的空白缩进），并按 target1DCols 智能折行
+            val normLines = mutableListOf<String>()
+            val barContRegex = Regex("""^([ │]+)(.*)$""")
+            val treePrefRegex = Regex("""^([ │]+)(?=[├└│]|──|→)""")
+            for (rawLn in lines) {
+                var ln = rawLn
+                val t = ln.trim()
+                val isClosedBoxRow = t.isNotEmpty() && t.first() in "┌├└│" && t.last() in "┐┤┘│"
+                if (t.isNotEmpty() && !isClosedBoxRow) {
+                    val mBarCont = barContRegex.matchEntire(ln)
+                    if (normLines.isNotEmpty() && mBarCont != null) {
+                        val prefix = mBarCont.groupValues[1]
+                        val rest = mBarCont.groupValues[2]
+                        val trailingSpaces = prefix.length - prefix.trimEnd(' ').length
+                        if (trailingSpaces >= 6 &&
+                            rest.isNotEmpty() &&
+                            rest.first() !in "┌─┐│└┘├┤┬┴┼▲▼◄►▸▾•◦▪◆◇○●★☆→←↑↓[【(（-0123456789①②③④⑤⑥⑦⑧⑨⑩"
+                        ) {
+                            val prev = normLines.last().trimEnd()
+                            if (prev.isNotEmpty() && prev.last() !in "┐┤┘│") {
+                                normLines[normLines.lastIndex] = prev + rest
+                                continue
+                            }
+                        }
+                    }
+
+                    val mPref = treePrefRegex.find(ln)
+                    if (mPref != null) {
+                        var pref = mPref.groupValues[1]
+                        var rest = ln.substring(pref.length)
+                        if (pref.length > 12) {
+                            pref = pref.replace(Regex(""" {7,}"""), "      ")
+                        }
+                        rest = rest.replace(Regex(""" {3,}(?=[─═]+►|→)"""), " ")
+                        ln = pref + rest
+                    } else {
+                        ln = ln
+                            .replace(Regex("""^(\S+)\s{6,}(?=[├└]─)"""), "$1     ")
+                            .replace(Regex(""" {3,}(?=[─═]+►|→)"""), " ")
+                    }
+                }
+                normLines.add(ln)
+            }
+
+            val wrapped1D = mutableListOf<String>()
+            for (ln in normLines) {
+                val t = ln.trim()
+                if (t.isNotEmpty() && t.first() in "┌├└│" && t.last() in "┐┤┘│") {
+                    wrapped1D.add(ln)
+                } else {
+                    wrapped1D.addAll(wrapTreeOrPlainLine(ln, target1DCols))
+                }
+            }
+            lines = wrapped1D
+        }
+
+        return lines
     }
 
     /**

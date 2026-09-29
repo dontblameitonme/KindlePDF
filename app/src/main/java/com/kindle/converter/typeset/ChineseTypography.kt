@@ -214,7 +214,11 @@ object ChineseTypography {
         '┤' to listOf('+'),
         '┬' to listOf('+'),
         '┴' to listOf('+'),
-        '┼' to listOf('+')
+        '┼' to listOf('+'),
+        '╭' to listOf('┌', '+'),
+        '╮' to listOf('┐', '+'),
+        '╰' to listOf('└', '+'),
+        '╯' to listOf('┘', '+')
     )
 }
 

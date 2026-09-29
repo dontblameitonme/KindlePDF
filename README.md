@@ -15,10 +15,13 @@
   - 网页（`.html` / `.htm`）与现有 PDF 重排（`.pdf`，支持页眉页脚/页码清理与图片重提取）
 - **结构化表格与 ASCII 图表墨水屏专项优化（v1.2.0 新增）**：
   - **真网格表格排版引擎（`Block.TableBlock`）**：自动统计各列最大自然宽度，对紧凑列（如「营养素」「RNI」「状态」）优先保障单行零折行，剩余宽度按阻尼权重分配给长文本列；支持单元格内粗体/斜体折行、表头加粗、完整横竖网格线绘制，且**跨页时自动在新页顶部重复表头**、单行绝不跨页撕裂。
-  - **ASCII / Unicode 框线流程图自适应网格引擎（`Block.CodeBlock`）**：针对 Markdown 常见的决策树、流程图、餐盘比例图（含 `┌─┐│└┘├┤┬┴┼▲▼◄►` 与中英混排），采用**东亚半角/全角严格网格定位（`0.5 em` / `1.0 em`）**消除比例字体空格宽度偏差导致的竖线错位；并根据最长行半角列数**自动等比缩小字号**（自适应窄屏，最低 `5.0pt`），保证宽幅流程图在 6 英寸 Kindle 上单行完整呈现、不折行变形。
+  - **ASCII / Unicode 框线流程图窄屏自适应重排与网格引擎（`Block.CodeBlock`）**：针对 Markdown 常见的决策树、全景接力图、证据金字塔、餐盘比例图（含 `┌─┐│└┘├┤┬┴┼╭╮╰╯▲▼◄►` 与中英混排）：
+    - **单列框线图与树状图自适应重排（`optimizeDiagramLinesForKindle`）**：自动剥离整块冗余前导空格，将宽幅单列闭合方框（`┌───┐...└───┘`）、并列双栏树状表、横式双分式与并列双框重构为适合 6 英寸墨水屏阅读的 44 列宽度（字号达 **`9.3pt ~ 9.5pt`**，彻底告别原先缩小至 `5.0pt` 看不清的问题），自动智能折行框内/树枝长文本（保护英文单词与剂量单位如 `200㎡`、`pH 6.0～7.0` 不被劈断）并重新对齐左右竖线边框与中心连接线（`▲`/`│`/`┴`）；
+    - **二维图形无损列压缩（`compact2DRows`）**：对真二维图形自动剔除冗余空白/横线列，确保最小字号不低于 `7.3pt ~ 8.8pt`；
+    - **东亚半角/全角网格定位 + 宽拉丁字母防重叠**：框线与箭头符号严格锁定在 `0.5 em` / `1.0 em` 网格坐标，正文字符自动规避比例字体中宽大写字母（如 `M`、`W`、`T`）的字形重叠，且分页器自动保护闭合子方框（`┌...┐` 至 `└...┘`）不被跨页孤立切断。
   - **多级嵌套列表与悬挂缩进**：递归解析多级无序/有序列表，按层级采用 `•` / `◦` / `▪` 符号区分，并实现真正的**悬挂缩进（Hanging Indent）**——折行后的第 2、3 行与首行正文严格左对齐。
   - **增强型引用块（Callout）与分割线**：支持引用块内包含多个段落与列表，并在左侧自动绘制竖向装饰条（跨页自动分段）；支持 `---` / `<hr>` 水平分割线绘制。
-  - **PDF 伪粗体（Synthetic Bold）与符号降级保护**：当用户仅导入单字重（Regular）中文字体时，PDF 渲染器自动启用 `RenderingMode.FILL_STROKE` 描边加粗，使标题、表头与行内 `**加粗**` 在墨水屏上呈现清晰的黑体加粗；当字体缺失 `►◄▲▼◦▪` 等特殊符号时自动降级为 `→←↑↓·•`，杜绝符号丢失。
+  - **中文语境 `**加粗**` 100% 精准识别与 PDF 伪粗体（Synthetic Bold）**：预处理解决 CommonMark §6.2 侧翼定界符规则在中文标点（`“”（）《》【】%℃～`）与汉字紧邻时导致 `**...**` 失效或反向加粗的顽疾；当用户仅导入单字重（Regular）中文字体时，PDF 渲染器自动启用 `RenderingMode.FILL_STROKE`（`0.042 * fontSize` 描边宽度）使标题、表头与行内 `**加粗**` 呈现鲜明黑体效果；当字体缺失 `╭╮╰╯►◄▲▼◦▪` 等特殊符号时自动降级为 `┌┐└┘→←↑↓·•`，杜绝符号丢失或错位。
 - **专业中文排版引擎（符合 GB/T 15834 与 W3C CLREQ 标准）**：
   - **行首/行尾禁则（Kinsoku Shori）**：智能采用「优先悬挂/挤入（Pull-in）+ 退字法（Push-out）」双策略，杜绝句读点号、右引号、右括号出现在行首，杜绝左引号、左括号出现在行尾。
   - **视觉悬挂标点（Optical Hanging Punctuation）**：全角句读标点（`，。、；：！？`）墨迹位于左半角（`0.5 em`），右半角自带留白；在行末触发悬挂时自动扣除右侧空白并锁定字距不负向压缩，保证右边界在视觉上笔直齐平。
@@ -43,7 +46,7 @@ app/src/main/java/com/kindle/converter/
 ├── parser/                          # 多格式文档解析层（统一输出 Document 模型）
 │   ├── DocumentParser.kt            # 格式路由分发器（按后缀名 + 文件头 Magic Bytes 嗅探）
 │   ├── TxtParser.kt                 # TXT 解析：编码探测、CRLF 归一化、单/双换行分段、段首全角空格清理
-│   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格预处理 + CommonMark AST（多级列表、富引用块、分割线、图文混排）
+│   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格 + 中文 **粗体** 定界符预处理 + CommonMark AST
 │   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码、<hr> 与 <img> 抽取
 │   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、<table> 结构化提取、相对路径规范化、<img> 与 <svg><image/> 提取
 │   ├── DocxParser.kt                # DOCX 解析：document.xml 与 _rels 关系映射、<w:tbl> 结构化表格与 DrawingML/VML 内嵌图片提取
@@ -51,7 +54,7 @@ app/src/main/java/com/kindle/converter/
 │   └── ImageDownloader.kt           # 远程图片下载与通用位图尺寸探测（inJustDecodeBounds 元数据读取、文件头魔数识别）
 ├── typeset/                         # 排版引擎核心层
 │   ├── ChineseTypography.kt         # 中文标点禁则表、CJK 字符分类、东亚半角/全角网格列宽计算与特殊符号降级映射表
-│   └── TypesettingEngine.kt         # 核心排版管线：TextMeasurer + LineBreaker + Table/CodeBlock 布局 + Paginator（含跨页表头重复）
+│   └── TypesettingEngine.kt         # 核心排版管线：TextMeasurer + LineBreaker + Table/CodeBlock 自适应重排 + Paginator
 ├── pdf/                             # PDF 渲染与持久化层
 │   ├── FontManager.kt               # 自定义 TTF/OTF 字体导入、管理与 PdfBox 字体加载
 │   ├── PdfGenerator.kt              # 将 PageLayout 渲染为最终 PDF（含 FILL_STROKE 伪粗体、横竖线绘制、符号降级、大纲书签）
@@ -80,15 +83,19 @@ app/src/main/java/com/kindle/converter/
   - 在 `Paginator.paginate` 中，若行末因避头标点悬挂导致 `rawContentWidth > avail`，且末字符属于 `rightBlankFullWidthPunctuation`（右侧留白），先从目标对齐宽度中扣除该留白宽度。
   - 凡是带有行尾悬挂标点的行（`endsWithHangingPunct == true`），禁止施加负向 `charSpacing` 压缩，避免行尾多出的半个标点把整行正常汉字挤扁。
 
-### 2. 结构化表格与 ASCII 图表排版管线（`MarkdownParser` / `TypesettingEngine` / `PdfGenerator`）
+### 2. 结构化表格、中文加粗与 ASCII 图表排版管线（`MarkdownParser` / `TypesettingEngine` / `PdfGenerator`）
+- **中文语境 `**...**` 强强调定界符预处理（`MarkdownParser.preprocessCjkStrongDelimiters`）**：
+  CommonMark 0.22 规范 §6.2 规定左/右侧翼定界符（Left/Right-flanking delimiter run）在紧邻标点符号（`“”（）《》【】%℃～` 等）时，另一侧必须为空白或标点。在中文无空格排版中，诸如 `协同**“机械性消化（...）”**与**“化学性消化（...）”**` 会因第一个右 `**` 前为 `”`、后为汉字 `与` 而被判为“非右侧翼定界符”，不仅导致加粗失效、残留裸 `**`，还会与后方 `**` 错误配对把不该加粗的 `与` 加粗。`preprocessCjkStrongDelimiters` 在非代码围栏及非行内代码区间内，将成对的 `***...***` 与 `**...**` 转换为私有使用区哨兵字符（`\uE010`..`\uE013`），再由 `extractInlines` 状态机精确还原为 `bold = true` 的 `TextRun`。
 - **GFM 管道表格解析（`MarkdownParser.splitSegmentsWithTables`）**：
   CommonMark 核心库默认不含 `commonmark-ext-gfm-tables`。`MarkdownParser` 在进入 AST 解析前先在非代码围栏（` ``` ` / `~~~`）区间内扫描表头行与分隔行（`:?-{1,}:?`），按未转义 `|` 切分单元格，并对每个单元格递归调用 `Parser.parse` 提取行内 `**粗体**`、`*斜体*` 与 `` `代码` ``，组装为 `Block.TableBlock`。
 - **智能两段式列宽分配（`TypesettingEngine.layoutTableBlock`）**：
-  在 6 英寸墨水屏窄版心（约 `224pt`）下，若简单按列均分或线性比例分配，会导致短列（「维生素B12」「推荐量」）被挤压折行。算法先锁定自然宽度 `<= 0.95 * 平均列宽` 的紧凑列使其零折行，再将剩余空间按 `naturalWidth^0.72` 阻尼权重分配给长描述列，并在 `Paginator` 跨页切分时自动在每页顶部重绘 `headerRow`。
-- **代码块与 ASCII 框线图严格网格对齐（`TypesettingEngine.layoutCodeBlock`）**：
-  比例中文字体中空格宽度仅约 `0.26 em`，直接绘制会导致 ASCII 树状图/流程图竖线 `│` 错位。引擎不向 PDF 输出空格字形，而是按 `ChineseTypography.eastAsianColWidth(c)`（汉字/全角标点 = 2 半角列 = `1.0 em`，ASCII/框线符/箭头 = 1 半角列 = `0.5 em`）直接计算每个可见字符的绝对坐标 `padX + col * halfEm`，并按代码块最大列数自动缩放 `codeFontSize`（最低 `5.0pt`），实现零折行与像素级垂直对齐。
+  在 6 英寸墨水屏窄版心（约 `222pt`）下，若简单按列均分或线性比例分配，会导致短列（「维生素B12」「推荐量」）被挤压折行。算法先锁定自然宽度 `<= 0.95 * 平均列宽` 的紧凑列使其零折行，再将剩余空间按 `naturalWidth^0.72` 阻尼权重分配给长描述列，并在 `Paginator` 跨页切分时自动在每页顶部重绘 `headerRow`。
+- **代码块与 ASCII 框线图窄屏自适应重排与网格对齐（`TypesettingEngine.optimizeDiagramLinesForKindle` & `layoutCodeBlock`）**：
+  1. **窄屏自适应重排**：针对 6 英寸 Kindle 版心（目标 44 半角列，对应 `9.36pt` 大字号），自动剥离整块公共前导缩进，将宽幅单列闭合方框（`┌───┐...└───┘`）、双栏并列树状表、横式双分式方程、并列双框对照图重构为 44 列宽度，在框内按树枝前缀与单词/单位边界智能折行并重绘对齐右边框 `│` 与中心连接符 `▲`/`│`/`┴`；对真二维图形执行无损垂直冗余列剔除（`compact2DRows`），并对圆角框符号 `╭╮╰╯` 自动降级为全角等宽的 `┌┐└┘`。
+  2. **网格锁定与宽拉丁字形防重叠**：框线与箭头符号严格锁定在 `padX + col * halfEm` 网格坐标，确保竖线像素级垂直对齐；正文字符采用 `maxOf(gridX, minNextX)` 动态防碰撞，避免比例字体中宽大写字母（如 `M`、`W`、`T`）超出 `0.5 em` 时与右侧字符发生重叠。
+  3. **闭合子方框防孤立断页**：在 `Paginator.paginate` 中检测框线图内的闭合子方框（`┌...┐` 至 `└...┘` 及紧邻连接线），若当前页剩余高度不足以容纳整个子方框则整体推至下一页。
 - **单字重字体的 PDF 伪粗体（`PdfGenerator.drawPage`）**：
-  当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合 `0.032 * fontSize` 线宽实现描边加粗，并在绘制后立即恢复 `RenderingMode.FILL`。
+  当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合 `(0.042f * fontSize).coerceAtLeast(0.32f)` 线宽实现饱满的描边加粗，并在绘制后立即恢复 `RenderingMode.FILL`。
 
 ### 3. 图片提取与分页管线（`ImageDownloader` / `EpubParser` / `DocxParser` / `PdfParser` / `Paginator`）
 - **位图真实尺寸探测（`ImageDownloader.decodeDimensions`）**：

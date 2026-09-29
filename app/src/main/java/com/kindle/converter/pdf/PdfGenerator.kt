@@ -124,9 +124,9 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                         try {
                             if (needSyntheticBold) {
                                 // 伪粗体（Synthetic Bold）：当用户只导入了单字重 Regular 字体时，
-                                // 使用 FILL_STROKE 描边填充模式加粗（描边宽度 0.032 * fontSize），
-                                // 使标题、表头、行内 **加粗** 在 Kindle 墨水屏 PDF 上真正呈现黑体加粗效果。
-                                contentStream.setLineWidth((seg.fontSize * 0.032f).coerceAtLeast(0.25f))
+                                // 使用 FILL_STROKE 描边填充模式加粗（描边宽度 0.042 * fontSize），
+                                // 使标题、表头、行内 **加粗** 在 Kindle 墨水屏 PDF 上真正呈现鲜明黑体加粗效果。
+                                contentStream.setLineWidth((seg.fontSize * 0.042f).coerceAtLeast(0.32f))
                             }
                             contentStream.beginText()
                             contentStream.setFont(font, seg.fontSize)

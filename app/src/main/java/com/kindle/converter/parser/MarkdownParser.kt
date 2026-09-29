@@ -49,6 +49,29 @@ class MarkdownParser {
         """^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$"""
     )
 
+    /** 水平分隔线（ThematicBreak）正则，避免将 `***` 分隔线误判为粗斜体标记 */
+    private val thematicBreakLineRegex = Regex(
+        """^\s*(?:>\s*)*(?:(\*\s*){3,}|(-\s*){3,}|(_\s*){3,})\s*$"""
+    )
+
+    companion object {
+        /**
+         * 私用区哨兵字符（Unicode Private Use Area），用于绕过 CommonMark §6.2 针对中文+标点边界的
+         * 左右侧翼（left-/right-flanking）判定缺陷：
+         * CommonMark 规范规定当 `**` 紧邻中文引号/括号/百分号（如 `协同**“机械性消化（...）”**与**“化学性消化”**`）时，
+         * 第 1 个 `**` 因“前接汉字（非空白/非标点）且后接标点 `“`”被拒判为开启符，
+         * 而第 2 个 `**`（`”**与`）反被误判为开启符、第 3 个 `**`（`与**“`）被误判为闭合符，
+         * 导致真正需要加粗的引号内容残留裸 `**` 且未加粗，反而把两个加粗块中间的“与”字错误加粗。
+         *
+         * 解决方案：在进入 CommonMark 解析前，对非代码块区域的成对 `***...***` 与 `**...**`
+         * （跳过行内反引号 `` `...` `` 与转义 `\*`）成对替换为私用区哨兵字符，并在 AST 内联提取阶段按状态机还原为粗体/粗斜体。
+         */
+        private const val SENTINEL_BOLD_START = '\uE010'
+        private const val SENTINEL_BOLD_END = '\uE011'
+        private const val SENTINEL_BOLD_ITALIC_START = '\uE012'
+        private const val SENTINEL_BOLD_ITALIC_END = '\uE013'
+    }
+
     /**
      * 解析 Markdown 为 Document。
      * @param imageResolver 远程/本地图片解析回调（返回 null 表示跳过该图）。
@@ -89,7 +112,7 @@ class MarkdownParser {
     }
 
     /**
-     * 在围栏代码块（``` 或 ~~~）之外扫描并切分出 GFM 管道表格，其余部分保持原始 Markdown 文本交给 CommonMark。
+     * 在围栏代码块（``` 或 ~~~）之外扫描并切分出 GFM 管道表格，同时对非代码块普通文本行预注入成对粗体哨兵。
      */
     private fun splitSegmentsWithTables(markdown: String): List<MdSegment> {
         val lines = markdown.split('\n')
@@ -150,12 +173,155 @@ class MarkdownParser {
                 continue
             }
 
-            textBuf.append(line).append('\n')
+            val processedLine = if (inFence) line else preprocessCjkStrongDelimiters(line)
+            textBuf.append(processedLine).append('\n')
             i++
         }
         flushText()
         return result
     }
+
+    /**
+     * 将单行 Markdown 中位于行内代码（`` `...` ``）之外的成对 `***...***` 与 `**...**` 替换为私用区哨兵字符，
+     * 彻底解决 CommonMark 在中文汉字紧邻全角引号/括号/符号时漏判或反配 `**` 的问题。
+     */
+    private fun preprocessCjkStrongDelimiters(line: String): String {
+        if (!line.contains("**")) return line
+        if (thematicBreakLineRegex.matches(line)) return line
+
+        val n = line.length
+        val protectedMask = BooleanArray(n)
+
+        // 1) 标记转义字符 \* 与 \` 以及行内反引号代码区间 `...`
+        var idx = 0
+        while (idx < n) {
+            if (line[idx] == '\\' && idx + 1 < n) {
+                protectedMask[idx] = true
+                protectedMask[idx + 1] = true
+                idx += 2
+                continue
+            }
+            if (line[idx] == '`') {
+                var tickLen = 1
+                while (idx + tickLen < n && line[idx + tickLen] == '`') {
+                    tickLen++
+                }
+                // 寻找同行匹配的闭合反引号序列
+                var closeIdx = idx + tickLen
+                var foundClose = -1
+                while (closeIdx <= n - tickLen) {
+                    if (line[closeIdx] == '`') {
+                        var cLen = 1
+                        while (closeIdx + cLen < n && line[closeIdx + cLen] == '`') {
+                            cLen++
+                        }
+                        if (cLen == tickLen) {
+                            foundClose = closeIdx
+                            break
+                        }
+                        closeIdx += cLen
+                    } else {
+                        closeIdx++
+                    }
+                }
+                if (foundClose != -1) {
+                    for (k in idx until (foundClose + tickLen)) {
+                        protectedMask[k] = true
+                    }
+                    idx = foundClose + tickLen
+                    continue
+                } else {
+                    for (k in idx until (idx + tickLen)) {
+                        protectedMask[k] = true
+                    }
+                    idx += tickLen
+                    continue
+                }
+            }
+            idx++
+        }
+
+        fun isUnprotectedStar(pos: Int): Boolean =
+            pos in 0 until n && !protectedMask[pos] && line[pos] == '*'
+
+        fun starRunLenAt(pos: Int): Int {
+            var len = 0
+            while (pos + len < n && isUnprotectedStar(pos + len)) {
+                len++
+            }
+            return len
+        }
+
+        // 2) 从左向右扫描并配对 ***...*** 与 **...**
+        val sb = StringBuilder(n)
+        var p = 0
+        while (p < n) {
+            val runLen = starRunLenAt(p)
+            if (runLen == 3) {
+                // 查找闭合的 ***
+                var q = p + 3
+                var closePos = -1
+                while (q <= n - 3) {
+                    val qLen = starRunLenAt(q)
+                    if (qLen == 3) {
+                        closePos = q
+                        break
+                    } else if (qLen > 0) {
+                        q += qLen
+                    } else {
+                        q++
+                    }
+                }
+                if (closePos != -1 && line.substring(p + 3, closePos).isNotBlank()) {
+                    sb.append(SENTINEL_BOLD_ITALIC_START)
+                    sb.append(line, p + 3, closePos)
+                    sb.append(SENTINEL_BOLD_ITALIC_END)
+                    p = closePos + 3
+                    continue
+                }
+            } else if (runLen == 2) {
+                // 查找闭合的 **
+                var q = p + 2
+                var closePos = -1
+                while (q <= n - 2) {
+                    val qLen = starRunLenAt(q)
+                    if (qLen == 2) {
+                        closePos = q
+                        break
+                    } else if (qLen > 0) {
+                        q += qLen
+                    } else {
+                        q++
+                    }
+                }
+                if (closePos != -1 && line.substring(p + 2, closePos).isNotBlank()) {
+                    sb.append(SENTINEL_BOLD_START)
+                    sb.append(line, p + 2, closePos)
+                    sb.append(SENTINEL_BOLD_END)
+                    p = closePos + 2
+                    continue
+                }
+            }
+
+            if (runLen > 0) {
+                repeat(runLen) { sb.append('*') }
+                p += runLen
+            } else {
+                sb.append(line[p])
+                p++
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 将哨兵字符还原为原始 Markdown 星号（用于缩进代码块等不应解析行内格式的块）。
+     */
+    private fun restoreSentinelChars(text: String): String = text
+        .replace(SENTINEL_BOLD_START.toString(), "**")
+        .replace(SENTINEL_BOLD_END.toString(), "**")
+        .replace(SENTINEL_BOLD_ITALIC_START.toString(), "***")
+        .replace(SENTINEL_BOLD_ITALIC_END.toString(), "***")
 
     private fun isCandidateTableRow(line: String): Boolean {
         val t = line.trim()
@@ -220,9 +386,10 @@ class MarkdownParser {
      */
     private fun parseInlineCellRuns(cellMarkdown: String, defaultBold: Boolean): List<TextRun> {
         if (cellMarkdown.isBlank()) return emptyList()
-        val doc = parser.parse(cellMarkdown.trim())
+        val preprocessed = preprocessCjkStrongDelimiters(cellMarkdown.trim())
+        val doc = parser.parse(preprocessed)
         val runs = collectTextRuns(extractInlines(doc, parentBold = defaultBold, parentItalic = false))
-        return if (runs.isEmpty()) listOf(TextRun(cellMarkdown.trim(), bold = defaultBold)) else runs
+        return if (runs.isEmpty()) listOf(TextRun(restoreSentinelChars(cellMarkdown.trim()), bold = defaultBold)) else runs
     }
 
     // ---- 块级 AST 递归遍历 ----
@@ -279,11 +446,11 @@ class MarkdownParser {
                 }
 
                 is FencedCodeBlock -> {
-                    blocks.add(Block.CodeBlock(child.literal.trimEnd('\n', '\r'), child.info?.trim()))
+                    blocks.add(Block.CodeBlock(restoreSentinelChars(child.literal.trimEnd('\n', '\r')), child.info?.trim()))
                 }
 
                 is IndentedCodeBlock -> {
-                    blocks.add(Block.CodeBlock(child.literal.trimEnd('\n', '\r'), null))
+                    blocks.add(Block.CodeBlock(restoreSentinelChars(child.literal.trimEnd('\n', '\r')), null))
                 }
 
                 is ThematicBreak -> {
@@ -469,6 +636,11 @@ class MarkdownParser {
         data class ImageRef(val url: String) : InlineItem()
     }
 
+    private class SentinelStyleState(
+        var bold: Boolean = false,
+        var italic: Boolean = false
+    )
+
     /**
      * 递归抽取段落/标题内的内联元素，保留文字与图片的相对顺序。
      * 注意：遇到子级列表（BulletList / OrderedList）等块级容器时不向内展开，交由外层块级递归处理。
@@ -476,17 +648,44 @@ class MarkdownParser {
     private fun extractInlines(
         node: Node,
         parentBold: Boolean = false,
-        parentItalic: Boolean = false
+        parentItalic: Boolean = false,
+        sentinelState: SentinelStyleState = SentinelStyleState()
     ): List<InlineItem> {
         val items = mutableListOf<InlineItem>()
         val buf = StringBuilder()
-        val bufBold = parentBold
-        val bufItalic = parentItalic
 
         fun flush() {
             if (buf.isNotEmpty()) {
-                items.add(InlineItem.Text(listOf(TextRun(buf.toString(), bufBold, bufItalic))))
+                val effectiveBold = parentBold || sentinelState.bold
+                val effectiveItalic = parentItalic || sentinelState.italic
+                items.add(InlineItem.Text(listOf(TextRun(buf.toString(), effectiveBold, effectiveItalic))))
                 buf.clear()
+            }
+        }
+
+        fun appendWithSentinels(literal: String) {
+            for (ch in literal) {
+                when (ch) {
+                    SENTINEL_BOLD_START -> {
+                        flush()
+                        sentinelState.bold = true
+                    }
+                    SENTINEL_BOLD_END -> {
+                        flush()
+                        sentinelState.bold = false
+                    }
+                    SENTINEL_BOLD_ITALIC_START -> {
+                        flush()
+                        sentinelState.bold = true
+                        sentinelState.italic = true
+                    }
+                    SENTINEL_BOLD_ITALIC_END -> {
+                        flush()
+                        sentinelState.bold = false
+                        sentinelState.italic = false
+                    }
+                    else -> buf.append(ch)
+                }
             }
         }
 
@@ -497,21 +696,32 @@ class MarkdownParser {
                     // 块级子节点由外层单独处理，不混入当前段落内联流
                 }
 
-                is Text -> buf.append(child.literal)
+                is Text -> appendWithSentinels(child.literal)
 
                 is Code -> {
                     flush()
-                    items.add(InlineItem.Text(listOf(TextRun(child.literal, parentBold, parentItalic))))
+                    val cleanCode = restoreSentinelChars(child.literal)
+                    items.add(
+                        InlineItem.Text(
+                            listOf(
+                                TextRun(
+                                    cleanCode,
+                                    parentBold || sentinelState.bold,
+                                    parentItalic || sentinelState.italic
+                                )
+                            )
+                        )
+                    )
                 }
 
                 is Emphasis -> {
                     flush()
-                    items.addAll(extractInlines(child, parentBold, true))
+                    items.addAll(extractInlines(child, parentBold, true, sentinelState))
                 }
 
                 is StrongEmphasis -> {
                     flush()
-                    items.addAll(extractInlines(child, true, parentItalic))
+                    items.addAll(extractInlines(child, true, parentItalic, sentinelState))
                 }
 
                 is Image -> {
@@ -524,7 +734,12 @@ class MarkdownParser {
                     // 中文段落内软换行不强插多余英文空格，仅当两侧均为 ASCII 可见字符时补空格
                     val prevChar = if (buf.isNotEmpty()) buf.last() else null
                     val nextNodeText = (child.next as? Text)?.literal
-                    val nextChar = nextNodeText?.firstOrNull()
+                    val nextChar = nextNodeText?.firstOrNull {
+                        it != SENTINEL_BOLD_START &&
+                            it != SENTINEL_BOLD_END &&
+                            it != SENTINEL_BOLD_ITALIC_START &&
+                            it != SENTINEL_BOLD_ITALIC_END
+                    }
                     if (prevChar != null && nextChar != null && prevChar.code < 128 && nextChar.code < 128) {
                         buf.append(' ')
                     }
@@ -535,7 +750,7 @@ class MarkdownParser {
                 else -> {
                     // 链接或内联容器节点：保留子节点的粗斜体属性
                     flush()
-                    items.addAll(extractInlines(child, parentBold, parentItalic))
+                    items.addAll(extractInlines(child, parentBold, parentItalic, sentinelState))
                 }
             }
             child = child.next
