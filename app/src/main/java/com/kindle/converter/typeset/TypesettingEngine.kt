@@ -758,9 +758,16 @@ class Paginator {
                 }
             }
 
-            val codePadY = if (entry.isCodeBlock) 3.5f else 0f
+            val codePadY = if (entry.isCodeBlock) 2.5f else 0f
             if (entry.isCodeBlock) {
-                if (currentY + effectiveLineHeight + codePadY * 2f > maxBottom && currentElements.isNotEmpty()) {
+                // 若代码块整体不超过半页高度且当前页剩余高度放不下整个代码块，则优先换页以保持流程图完整不跨页
+                val totalCodeH = lines.size * effectiveLineHeight + codePadY * 2f
+                if (totalCodeH <= params.availableHeight * 0.75f &&
+                    currentY + totalCodeH > maxBottom &&
+                    currentElements.isNotEmpty()
+                ) {
+                    newPage()
+                } else if (currentY + effectiveLineHeight + codePadY * 2f > maxBottom && currentElements.isNotEmpty()) {
                     newPage()
                 }
                 currentY += codePadY
@@ -768,6 +775,11 @@ class Paginator {
 
             var sliceStartY = currentY
             var sliceHasLines = false
+
+            // 判定代码块自身是否已经包含 ASCII 框线（若已包含 ┌─┐│└┘ 则不再重复加外框）
+            val codeHasOwnBox = entry.isCodeBlock && lines.any { ln ->
+                ln.segments.any { seg -> seg.text.any { ch -> ch in "┌─┐│└┘├┤┬┴┼" } }
+            }
 
             fun flushBlockSliceDecorations(sliceEndY: Float) {
                 if (!sliceHasLines) return
@@ -786,17 +798,17 @@ class Paginator {
                         )
                     )
                 }
-                if (entry.isCodeBlock) {
-                    // 代码块 / ASCII 流程图外框细线
-                    val boxTop = (sliceStartY - 2.5f).coerceAtLeast(params.marginTop)
-                    val boxBottom = sliceEndY + 2.0f
+                if (entry.isCodeBlock && !codeHasOwnBox) {
+                    // 普通源代码块（无自带 ASCII 框线）绘制上下边界细线
+                    val boxTop = (sliceStartY - 2.0f).coerceAtLeast(params.marginTop)
+                    val boxBottom = sliceEndY + 1.5f
                     val boxH = (boxBottom - boxTop).coerceAtLeast(2f)
                     val boxLeft = params.marginLeft
                     val boxW = params.availableWidth
-                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxTop, boxW, 0f, 0.45f))
-                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxBottom, boxW, 0f, 0.45f))
-                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxTop, 0f, boxH, 0.45f))
-                    currentElements.add(LayoutElement.RuleLine(boxLeft + boxW, boxTop, 0f, boxH, 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(x = boxLeft, y = boxTop, width = boxW, height = 0f, strokeWidth = 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(x = boxLeft, y = boxBottom, width = boxW, height = 0f, strokeWidth = 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(x = boxLeft, y = boxTop, width = 0f, height = boxH, strokeWidth = 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(x = boxLeft + boxW, y = boxTop, width = 0f, height = boxH, strokeWidth = 0.45f))
                 }
             }
 
@@ -863,11 +875,14 @@ class Paginator {
                         params.textAlignment == TextAlignment.JUSTIFY)
 
                 val isEndLine = isLastLineOfBlock || line.isHardBreak || entry.isCodeBlock
+                // 注意：若因下一行开头是超长英文单词（如 monocytogenes）回退导致本行剩余空白 diff > 2.2em，
+                // 不对本行强行拉伸，避免整行字距被拉得过于稀疏。
                 val stretchActive = (params.textAlignment == TextAlignment.JUSTIFY || forceJustify) &&
-                    !isEndLine && !entry.isHeading && !entry.isCodeBlock && diff > 0.5f
+                    !isEndLine && !entry.isHeading && !entry.isCodeBlock &&
+                    diff > 0.5f && diff <= lineFontSize * 2.2f
 
-                // 拉伸上限 0.25em，压缩下限 0.15em
-                val maxStretch = lineFontSize * 0.25f
+                // 拉伸上限 0.16em，压缩下限 0.15em
+                val maxStretch = lineFontSize * 0.16f
                 val maxCompress = lineFontSize * 0.15f
 
                 val charSpacing = when {
@@ -1178,26 +1193,28 @@ class TypesettingEngine(
      * 代码块与 ASCII / Unicode 框线图（如决策树、餐盘比例图、流程图）自适应排版引擎：
      *
      * 核心设计：
-     * 1. **东亚半角/全角严格网格定位（0.5em / 1.0em Monospace Grid）**：
-     *    传统调用 LineBreaker.breakLines 会吞掉每行行首缩进空格，且比例字体中空格仅约 0.26em、
-     *    ASCII 字母约 0.52em、汉字 1.0em，导致多行 ASCII 框线图的竖线 `│` 与箭头 `▲▼` 严重错位。
-     *    现改为按半角列宽（`halfEm = codeFontSize * 0.5f`）逐字符计算精确网格坐标：
-     *    - 空白字符不生成 glyph，直接推进网格列游标，彻底消除比例字体空格宽度偏差；
-     *    - 每个可见字符（经 resolveSupportedChar 降级保护）精准定位在 `padX + col * halfEm`。
-     * 2. **基于最长行宽度的字号自适应缩放（Auto-Fit Font Scaling）**：
-     *    统计整个代码块的最大半角列数 `maxCols`，若默认字号（`0.82 * fontSize`）下超出页面可用宽度，
-     *    自动等比缩小字号（下限 `5.0pt`），使 50~65 列的流程图/架构图在 6 英寸 Kindle 窄屏上完整单行呈现、绝不中途折行错位。
+     * 1. **ASCII 框线图右边界自动对齐修正（`normalizeAsciiBoxes`）**：
+     *    手写 Markdown 框线图在中英混排时极易出现作者少算或多算空格（如顶框 `┌───┐` 宽 50 列，
+     *    而内部文字行 `│ ... │` 宽 58 列，导致右侧竖线 `│` 参差错位）。
+     *    引擎自动识别连续的单栏框线块，统计块内最宽行的半角列数，自动补齐顶/中/底横框线 `─` 并对齐每行末尾的 `│`。
+     * 2. **东亚半角/全角严格网格定位（0.5em / 1.0em Monospace Grid）**：
+     *    按半角列宽（`halfEm = codeFontSize * 0.5f`）逐字符计算精确网格坐标，空白符只推进列游标不绘制字形，
+     *    彻底消除比例字体空格宽度偏差。
+     * 3. **基于最长行宽度的字号自适应缩放（Auto-Fit Font Scaling）**：
+     *    统计整个代码块的最大半角列数 `maxCols`，超出版心宽度时自动等比缩小字号（下限 `5.0pt`），确保宽幅流程图单行完整呈现。
      */
     private fun layoutCodeBlock(
         block: Block.CodeBlock,
         availableWidth: Float,
         baseFontSize: Float
     ): Paginator.BlockLines {
-        val rawLines = block.text
+        val initialLines = block.text
             .replace("\r\n", "\n")
             .replace('\r', '\n')
             .split('\n')
             .map { it.replace("\t", "    ") }
+
+        val rawLines = normalizeAsciiBoxes(initialLines)
 
         val maxCols = rawLines.maxOfOrNull { line ->
             line.sumOf { c -> ChineseTypography.eastAsianColWidth(c) }
@@ -1293,6 +1310,86 @@ class TypesettingEngine(
             isCodeBlock = true,
             customLineHeight = codeFontSize * 1.35f
         )
+    }
+
+    /**
+     * 自动对齐 ASCII 框线图的右边框：
+     * 针对以 `┌...┐` 开始、`└...┘` 结束的闭合框线块，若其内部为单栏框（不含 `┬┴┼` 分栏），
+     * 自动按该框内最宽行的半角列数统一补齐横线 `─` 与每行末尾 `│` 前的空格，消除手写 Markdown 空格计数误差。
+     */
+    private fun normalizeAsciiBoxes(lines: List<String>): List<String> {
+        val out = lines.toMutableList()
+        var i = 0
+        while (i < out.size) {
+            val trimmedStart = out[i].trim()
+            if (trimmedStart.startsWith('┌') && trimmedStart.endsWith('┐')) {
+                // 向下寻找匹配的 └...┘
+                var endIdx = -1
+                var allBoxRows = true
+                var hasMultiCol = false
+                for (j in i until out.size) {
+                    val t = out[j].trim()
+                    if (t.isEmpty()) {
+                        allBoxRows = false
+                        break
+                    }
+                    val firstC = t.first()
+                    val lastC = t.last()
+                    if (firstC !in "┌├└│" || lastC !in "┐┤┘│") {
+                        allBoxRows = false
+                        break
+                    }
+                    if (t.any { it in "┬┴┼" }) {
+                        hasMultiCol = true
+                    }
+                    if (firstC == '└' && lastC == '┘') {
+                        endIdx = j
+                        break
+                    }
+                }
+
+                if (allBoxRows && endIdx > i && !hasMultiCol) {
+                    val leadingSpaces = out[i].takeWhile { it == ' ' }
+                    // 计算每一行去掉行尾边框符与尾随空格后的最小所需半角列数
+                    var targetCols = 0
+                    for (j in i..endIdx) {
+                        val t = out[j].trim()
+                        val firstC = t.first()
+                        val lastC = t.last()
+                        val isHorizRule = firstC in "┌├└" && lastC in "┐┤┘" &&
+                            t.substring(1, t.length - 1).all { it == '─' || it == '-' }
+                        val rowCols = if (isHorizRule) {
+                            t.sumOf { ChineseTypography.eastAsianColWidth(it) }
+                        } else {
+                            val inner = t.substring(1, t.length - 1).trimEnd(' ')
+                            1 + inner.sumOf { ChineseTypography.eastAsianColWidth(it) } + 1 + 1
+                        }
+                        if (rowCols > targetCols) targetCols = rowCols
+                    }
+
+                    for (j in i..endIdx) {
+                        val t = out[j].trim()
+                        val firstC = t.first()
+                        val lastC = t.last()
+                        val isHorizRule = firstC in "┌├└" && lastC in "┐┤┘" &&
+                            t.substring(1, t.length - 1).all { it == '─' || it == '-' }
+                        out[j] = if (isHorizRule) {
+                            val dashCount = (targetCols - 2).coerceAtLeast(1)
+                            leadingSpaces + firstC + "─".repeat(dashCount) + lastC
+                        } else {
+                            val inner = t.substring(1, t.length - 1).trimEnd(' ')
+                            val innerCols = inner.sumOf { ChineseTypography.eastAsianColWidth(it) }
+                            val padSpaces = (targetCols - 2 - innerCols).coerceAtLeast(1)
+                            leadingSpaces + firstC + inner + " ".repeat(padSpaces) + lastC
+                        }
+                    }
+                    i = endIdx + 1
+                    continue
+                }
+            }
+            i++
+        }
+        return out
     }
 
     /**
