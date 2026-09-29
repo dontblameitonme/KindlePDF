@@ -388,11 +388,53 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                 listOf(
                     TextRun(
                         "以下文字用于实时预览当前排版参数（页面尺寸、边距、字号、行距、对齐方式与段间距）。" +
-                            "它是内置示例，无需导入文件即可查看效果。"
+                            "同时展示结构化表格、多级列表、引用块与 ASCII 流程图的排版效果。"
                     )
                 )
             )
         )
+        blocks.add(
+            Block.TableBlock(
+                headers = listOf(
+                    listOf(TextRun("营养素", bold = true)),
+                    listOf(TextRun("每日推荐", bold = true)),
+                    listOf(TextRun("主要生理功能与食物来源", bold = true))
+                ),
+                rows = listOf(
+                    listOf(
+                        listOf(TextRun("蛋白质", bold = true)),
+                        listOf(TextRun("1.0~1.2g/kg")),
+                        listOf(TextRun("维持肌肉与免疫系统，来源包括鱼虾、禽肉、蛋奶与大豆制品。"))
+                    ),
+                    listOf(
+                        listOf(TextRun("维生素D", bold = true)),
+                        listOf(TextRun("400~800 IU")),
+                        listOf(TextRun("促进钙吸收与骨骼健康，可通过日照、深海鱼及强化食品补充。"))
+                    )
+                )
+            )
+        )
+        blocks.add(
+            Block.QuoteBlock(
+                listOf(
+                    TextRun("核心提示：", bold = true),
+                    TextRun("跨页表格会自动在新页顶部重复表头，代码块与 ASCII 框线图按半角/全角严格网格对齐。")
+                )
+            )
+        )
+        blocks.add(Block.ListItem(level = 0, ordered = false, runs = listOf(TextRun("一级列表项：支持悬挂缩进，折行后文字与首行正文严格对齐"))))
+        blocks.add(Block.ListItem(level = 1, ordered = false, runs = listOf(TextRun("二级嵌套列表：采用不同层级符号区分结构层次"))))
+        blocks.add(
+            Block.CodeBlock(
+                """
+                ┌──────────────┐    ┌──────────────┐
+                │  Markdown表  ├───►│  自适应列宽  │
+                └──────────────┘    └──────────────┘
+                """.trimIndent(),
+                language = "text"
+            )
+        )
+        blocks.add(Block.HorizontalRule)
         val paragraphs = SAMPLE_TEXT.split("\n\n").map { it.trim() }.filter { it.isNotEmpty() }
         paragraphs.forEach { p ->
             blocks.add(Block.Paragraph(listOf(TextRun(p))))

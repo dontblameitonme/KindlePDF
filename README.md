@@ -9,21 +9,27 @@
 
 - **多格式输入支持**：
   - 纯文本（`.txt`，自动识别 UTF-8 / UTF-16 / GBK 编码，兼容单换行与空行分段，自动去重段首全角空格）
-  - Markdown（`.md` / `.markdown`，支持标题、列表、引用、代码块及图文混排）
-  - Word 文档（`.docx`，零 POI 依赖直接解析 OOXML，支持标题层级、列表、表格文字及内嵌图片提取）
-  - 电子书（`.epub`，支持 EPUB 2 NCX / EPUB 3 Nav 目录、相对路径消解、`<img/>` 与 `<svg><image/></svg>` 封面/插图提取）
+  - Markdown（`.md` / `.markdown`，完整支持 **GFM 管道表格**、**ASCII / Unicode 流程图与框线图**、**多级嵌套列表**、**含列表/多段的复杂引用块（Callout）**、**水平分割线 `---`**、H1~H6 标题、代码块及图文混排）
+  - Word 文档（`.docx`，零 POI 依赖直接解析 OOXML，支持标题层级、列表、**结构化表格 `<w:tbl>`** 及内嵌图片提取）
+  - 电子书（`.epub`，支持 EPUB 2 NCX / EPUB 3 Nav 目录、相对路径消解、**HTML `<table>` 表格**、`<img/>` 与 `<svg><image/></svg>` 封面/插图提取）
   - 网页（`.html` / `.htm`）与现有 PDF 重排（`.pdf`，支持页眉页脚/页码清理与图片重提取）
+- **结构化表格与 ASCII 图表墨水屏专项优化（v1.2.0 新增）**：
+  - **真网格表格排版引擎（`Block.TableBlock`）**：自动统计各列最大自然宽度，对紧凑列（如「营养素」「RNI」「状态」）优先保障单行零折行，剩余宽度按阻尼权重分配给长文本列；支持单元格内粗体/斜体折行、表头加粗、完整横竖网格线绘制，且**跨页时自动在新页顶部重复表头**、单行绝不跨页撕裂。
+  - **ASCII / Unicode 框线流程图自适应网格引擎（`Block.CodeBlock`）**：针对 Markdown 常见的决策树、流程图、餐盘比例图（含 `┌─┐│└┘├┤┬┴┼▲▼◄►` 与中英混排），采用**东亚半角/全角严格网格定位（`0.5 em` / `1.0 em`）**消除比例字体空格宽度偏差导致的竖线错位；并根据最长行半角列数**自动等比缩小字号**（自适应窄屏，最低 `5.0pt`），保证宽幅流程图在 6 英寸 Kindle 上单行完整呈现、不折行变形。
+  - **多级嵌套列表与悬挂缩进**：递归解析多级无序/有序列表，按层级采用 `•` / `◦` / `▪` 符号区分，并实现真正的**悬挂缩进（Hanging Indent）**——折行后的第 2、3 行与首行正文严格左对齐。
+  - **增强型引用块（Callout）与分割线**：支持引用块内包含多个段落与列表，并在左侧自动绘制竖向装饰条（跨页自动分段）；支持 `---` / `<hr>` 水平分割线绘制。
+  - **PDF 伪粗体（Synthetic Bold）与符号降级保护**：当用户仅导入单字重（Regular）中文字体时，PDF 渲染器自动启用 `RenderingMode.FILL_STROKE` 描边加粗，使标题、表头与行内 `**加粗**` 在墨水屏上呈现清晰的黑体加粗；当字体缺失 `►◄▲▼◦▪` 等特殊符号时自动降级为 `→←↑↓·•`，杜绝符号丢失。
 - **专业中文排版引擎（符合 GB/T 15834 与 W3C CLREQ 标准）**：
   - **行首/行尾禁则（Kinsoku Shori）**：智能采用「优先悬挂/挤入（Pull-in）+ 退字法（Push-out）」双策略，杜绝句读点号、右引号、右括号出现在行首，杜绝左引号、左括号出现在行尾。
-  - **视觉悬挂标点（Optical Hanging Punctuation）**：全角句读标点（`，。、；：！？`）墨迹位于左半角（`0.5 em`），右半角自带留白；在行末触发悬挂时自动扣除 `0.45 em` 右侧空白并锁定字距不负向压缩，保证右边界在视觉上笔直齐平。
-  - **两端对齐（Justify）与拉丁断词**：非段末行自动微调字距（拉伸上限 `+0.25 em`、压缩下限 `-0.10 em`）；英文单词仅在连续拉丁字符内部按空格回退断行，绝不误伤前方汉字；纯汉字与拉丁字母/数字之间自动插入 `0.20 em` 视觉间距。
-  - **孤行控制（Widow Control）**：自动避免段落末行仅剩 1 个字符落单。
+  - **视觉悬挂标点（Optical Hanging Punctuation）**：全角句读标点（`，。、；：！？`）墨迹位于左半角（`0.5 em`），右半角自带留白；在行末触发悬挂时自动扣除右侧空白并锁定字距不负向压缩，保证右边界在视觉上笔直齐平。
+  - **两端对齐（Justify）与拉丁断词**：非段末行自动微调字距（拉伸上限 `+0.25 em`、压缩下限 `-0.15 em`）；英文单词仅在连续拉丁字符内部按空格回退断行，绝不误伤前方汉字；纯汉字与拉丁字母/数字之间自动插入 `0.20 em` 视觉间距。
+  - **孤行/寡行控制（Orphan & Widow Control）**：自动避免段落首行孤立在页底或末行孤立在页顶。
 - **全链路图片自适应排版**：
   - 本地（EPUB / DOCX / PDF）与远程（Markdown / HTML）图片自动探测真实像素尺寸与格式（PNG / JPEG / GIF / WebP），保持原始宽高比。
   - 严格限制单图最大高度不超过单页可用版心高度，超高长图自动按比例缩放并水平居中，杜绝图片跨页死循环或被静默丢弃。
 - **参数预设与实时预览**：
   - 字体、页边距、行距、字号、首行缩进、段间距等参数可保存为预设，启动自动恢复。
-  - 内置单页/多页排版实时预览与离线《故乡》中英混排示例预览。
+  - 内置单页/多页排版实时预览与离线综合示例预览（含表格、引用块、多级列表、ASCII 流程图与中英混排正文）。
 
 ---
 
@@ -33,27 +39,26 @@
 app/src/main/java/com/kindle/converter/
 ├── MainActivity.kt                  # 应用入口 Activity
 ├── data/
-│   └── Models.kt                    # 核心数据模型（Document, Block, TextRun, PageLayout, TypesettingParams）
+│   └── Models.kt                    # 核心数据模型（Document, Block[含 TableBlock/HorizontalRule], TextRun, PageLayout）
 ├── parser/                          # 多格式文档解析层（统一输出 Document 模型）
 │   ├── DocumentParser.kt            # 格式路由分发器（按后缀名 + 文件头 Magic Bytes 嗅探）
 │   ├── TxtParser.kt                 # TXT 解析：编码探测、CRLF 归一化、单/双换行分段、段首全角空格清理
-│   ├── MarkdownParser.kt            # Markdown 解析：基于 CommonMark AST，保持段落内图文相对顺序
-│   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码与 <img> 抽取
-│   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、相对路径规范化（../ 消解）、<img> 与 <svg><image/> 提取
-│   ├── DocxParser.kt                # DOCX 解析：document.xml 与 _rels/document.xml.rels 关系映射、DrawingML/VML 内嵌图片提取
+│   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格预处理 + CommonMark AST（多级列表、富引用块、分割线、图文混排）
+│   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码、<hr> 与 <img> 抽取
+│   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、<table> 结构化提取、相对路径规范化、<img> 与 <svg><image/> 提取
+│   ├── DocxParser.kt                # DOCX 解析：document.xml 与 _rels 关系映射、<w:tbl> 结构化表格与 DrawingML/VML 内嵌图片提取
 │   ├── PdfParser.kt                 # PDF 重排解析：基于 Y 坐标容差聚合行、智能识别中英文间距、页眉页脚过滤与位图提取
 │   └── ImageDownloader.kt           # 远程图片下载与通用位图尺寸探测（inJustDecodeBounds 元数据读取、文件头魔数识别）
 ├── typeset/                         # 排版引擎核心层
-│   ├── ChineseTypography.kt         # 中文标点禁则表（避头/避尾/右半角留白标点）、CJK 字符分类与中西文间距判定
-│   ├── TextMeasurer.kt              # 基于 PdfBox PDFont 的字形宽度精确测量与带缓存计算
-│   └── TypesettingEngine.kt         # 核心排版管线：LineBreaker（断行/禁则/断词）→ Paginator（分页/两端对齐/悬挂标点/图片缩放）
+│   ├── ChineseTypography.kt         # 中文标点禁则表、CJK 字符分类、东亚半角/全角网格列宽计算与特殊符号降级映射表
+│   └── TypesettingEngine.kt         # 核心排版管线：TextMeasurer + LineBreaker + Table/CodeBlock 布局 + Paginator（含跨页表头重复）
 ├── pdf/                             # PDF 渲染与持久化层
 │   ├── FontManager.kt               # 自定义 TTF/OTF 字体导入、管理与 PdfBox 字体加载
-│   ├── PdfGenerator.kt              # 将 PageLayout 渲染为最终 PDF 文件（含大纲书签、字距矩阵绘制、图片绘制）
+│   ├── PdfGenerator.kt              # 将 PageLayout 渲染为最终 PDF（含 FILL_STROKE 伪粗体、横竖线绘制、符号降级、大纲书签）
 │   └── PresetRepository.kt          # 排版参数与预设持久化存储
 ├── ui/                              # Jetpack Compose 界面层
 │   ├── ConverterScreen.kt           # 主界面（文件选择、字体管理、排版参数面板、预览弹窗）
-│   ├── PagePreviewCanvas.kt         # Compose Canvas 实时排版预览渲染器
+│   ├── PreviewCanvas.kt             # Compose Canvas 实时排版预览渲染器（支持横竖网格线与缩放拖拽）
 │   └── Theme.kt                     # Material 3 主题配色
 └── viewmodel/
     └── ConverterViewModel.kt        # 状态管理、异步解析转换管线与同目录文件输出回退逻辑
@@ -72,10 +77,20 @@ app/src/main/java/com/kindle/converter/
   - **避头**：当下一个字符为行首禁用标点时，先检查后续连续避头标点序列（例如 `”，` 或 `。）`）的总宽度。若单标点越界量 `<= 1.05 em`，允许悬挂在当前行尾；若连续多个避头标点导致越界过宽，则触发**退字法（`tryPushOutForKinsoku`）**，将当前行末尾的 1 个汉字回退到下一行，让标点跟随该字安全落入下一行第 2 列之后。
   - **避尾**：当行末遗留前引号/左括号（如 `“（《`）时，调用 `rollbackTrailingLineEndForbidden` 将连续的避尾标点整体回退到下一行行首，禁止在行尾拉入后续正文字符导致溢出。
 - **两端对齐（`JUSTIFY`）与视觉悬挂标点**：
-  - 在 `Paginator.paginate` 中，若行末因避头标点悬挂导致 `rawContentWidth > avail`，且末字符属于 `rightBlankFullWidthPunctuation`（`0.45 em` 右侧留白），先从目标对齐宽度中扣除该留白宽度。
+  - 在 `Paginator.paginate` 中，若行末因避头标点悬挂导致 `rawContentWidth > avail`，且末字符属于 `rightBlankFullWidthPunctuation`（右侧留白），先从目标对齐宽度中扣除该留白宽度。
   - 凡是带有行尾悬挂标点的行（`endsWithHangingPunct == true`），禁止施加负向 `charSpacing` 压缩，避免行尾多出的半个标点把整行正常汉字挤扁。
 
-### 2. 图片提取与分页管线（`ImageDownloader` / `EpubParser` / `DocxParser` / `PdfParser` / `Paginator`）
+### 2. 结构化表格与 ASCII 图表排版管线（`MarkdownParser` / `TypesettingEngine` / `PdfGenerator`）
+- **GFM 管道表格解析（`MarkdownParser.splitSegmentsWithTables`）**：
+  CommonMark 核心库默认不含 `commonmark-ext-gfm-tables`。`MarkdownParser` 在进入 AST 解析前先在非代码围栏（` ``` ` / `~~~`）区间内扫描表头行与分隔行（`:?-{1,}:?`），按未转义 `|` 切分单元格，并对每个单元格递归调用 `Parser.parse` 提取行内 `**粗体**`、`*斜体*` 与 `` `代码` ``，组装为 `Block.TableBlock`。
+- **智能两段式列宽分配（`TypesettingEngine.layoutTableBlock`）**：
+  在 6 英寸墨水屏窄版心（约 `224pt`）下，若简单按列均分或线性比例分配，会导致短列（「维生素B12」「推荐量」）被挤压折行。算法先锁定自然宽度 `<= 0.95 * 平均列宽` 的紧凑列使其零折行，再将剩余空间按 `naturalWidth^0.72` 阻尼权重分配给长描述列，并在 `Paginator` 跨页切分时自动在每页顶部重绘 `headerRow`。
+- **代码块与 ASCII 框线图严格网格对齐（`TypesettingEngine.layoutCodeBlock`）**：
+  比例中文字体中空格宽度仅约 `0.26 em`，直接绘制会导致 ASCII 树状图/流程图竖线 `│` 错位。引擎不向 PDF 输出空格字形，而是按 `ChineseTypography.eastAsianColWidth(c)`（汉字/全角标点 = 2 半角列 = `1.0 em`，ASCII/框线符/箭头 = 1 半角列 = `0.5 em`）直接计算每个可见字符的绝对坐标 `padX + col * halfEm`，并按代码块最大列数自动缩放 `codeFontSize`（最低 `5.0pt`），实现零折行与像素级垂直对齐。
+- **单字重字体的 PDF 伪粗体（`PdfGenerator.drawPage`）**：
+  当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合 `0.032 * fontSize` 线宽实现描边加粗，并在绘制后立即恢复 `RenderingMode.FILL`。
+
+### 3. 图片提取与分页管线（`ImageDownloader` / `EpubParser` / `DocxParser` / `PdfParser` / `Paginator`）
 - **位图真实尺寸探测（`ImageDownloader.decodeDimensions`）**：
   使用 Android `BitmapFactory.Options().apply { inJustDecodeBounds = true }` 时，`BitmapFactory.decodeByteArray(...)` 按 Android 规范**必然返回 `null`**，真实宽高保存在 `opts.outWidth` 与 `opts.outHeight` 中。切勿判断返回值非空，否则会导致宽高回退为硬编码值造成图片拉伸变形。
 - **EPUB 路径消解（`EpubParser.resolvePath`）**：

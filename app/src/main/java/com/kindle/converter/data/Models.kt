@@ -29,6 +29,19 @@ sealed class Block {
         val heightPx: Int,
         val format: String = "png"
     ) : Block()
+    /**
+     * 结构化数据表格块（由 Markdown 管道表格、HTML/EPUB `<table>` 或 DOCX `<w:tbl>` 解析生成）。
+     * @param headers 表头行各列单元格的富文本列表（可为空列表表示无独立表头）
+     * @param rows 数据行列表，每行包含各列单元格的富文本（List<TextRun>）
+     */
+    data class TableBlock(
+        val headers: List<List<TextRun>>,
+        val rows: List<List<List<TextRun>>>
+    ) : Block()
+    /**
+     * 水平分隔线块（对应 Markdown `---` / `***` 或 HTML `<hr>`）。
+     */
+    object HorizontalRule : Block()
 }
 
 data class TextRun(
@@ -90,7 +103,13 @@ sealed class LayoutElement {
         val y: Float,
         val x: Float,
         val width: Float,
-        val strokeWidth: Float
+        val strokeWidth: Float,
+        /**
+         * 线条垂直跨度（默认 0f 表示从 (x, y) 到 (x + width, y) 的水平线；
+         * 若 height > 0f 且 width == 0f，则表示从 (x, y) 到 (x, y + height) 的垂直线，
+         * 用于绘制表格列边框与引用块左侧装饰竖线）。
+         */
+        val height: Float = 0f
     ) : LayoutElement()
 }
 

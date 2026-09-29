@@ -102,7 +102,7 @@ class HtmlParser {
 
                 lower == "<hr>" || lower.startsWith("<hr ") -> {
                     flush(0)
-                    blocks.add(Block.Paragraph(listOf(TextRun("---"))))
+                    blocks.add(Block.HorizontalRule)
                 }
 
                 else -> {

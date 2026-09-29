@@ -22,7 +22,6 @@ class TextMeasurer(
     private val boldFont: PDFont?
 ) {
     fun measureText(text: String, fontSize: Float, bold: Boolean = false): Float {
-        val font = if (bold && boldFont != null) boldFont else regularFont
         var width = 0f
         for (c in text) {
             width += measureChar(c, fontSize, bold)
@@ -30,11 +29,44 @@ class TextMeasurer(
         return width
     }
 
+    /**
+     * 解析当前字体可编码渲染的字符；若原字符在字体中缺失（如部分精简字库缺少 ►、◦、▪），
+     * 则按 ChineseTypography.glyphFallbacks 依次尝试等价降级字符。
+     */
+    fun resolveSupportedChar(c: Char, bold: Boolean = false): Char {
+        val font = if (bold && boldFont != null) boldFont else regularFont
+        try {
+            font.encode(c.toString())
+            return c
+        } catch (_: Exception) {
+            val fallbacks = ChineseTypography.glyphFallbacks[c] ?: return c
+            for (fb in fallbacks) {
+                try {
+                    font.encode(fb.toString())
+                    return fb
+                } catch (_: Exception) {
+                    // try next fallback
+                }
+            }
+            return fallbacks.firstOrNull() ?: c
+        }
+    }
+
     fun measureChar(c: Char, fontSize: Float, bold: Boolean = false): Float {
         val font = if (bold && boldFont != null) boldFont else regularFont
         return try {
             font.getStringWidth(c.toString()) / 1000f * fontSize
         } catch (e: Exception) {
+            val fallbacks = ChineseTypography.glyphFallbacks[c]
+            if (fallbacks != null) {
+                for (fb in fallbacks) {
+                    try {
+                        return font.getStringWidth(fb.toString()) / 1000f * fontSize
+                    } catch (_: Exception) {
+                        // try next
+                    }
+                }
+            }
             // Fallback: estimate based on whether CJK or Latin
             if (ChineseTypography.isCJK(c)) fontSize else fontSize * 0.5f
         }
@@ -460,13 +492,35 @@ class LineBreaker(private val measurer: TextMeasurer) {
 
 class Paginator {
 
+    data class TableRowLayout(
+        val cellLines: List<List<LineBreaker.Line>>,
+        val height: Float,
+        val isHeader: Boolean = false
+    )
+
+    data class TableLayoutData(
+        val colWidths: List<Float>,
+        val headerRow: TableRowLayout?,
+        val bodyRows: List<TableRowLayout>,
+        val cellPadX: Float,
+        val cellPadY: Float,
+        val cellLineHeight: Float,
+        val tableFontSize: Float
+    )
+
     data class BlockLines(
         val lines: List<LineBreaker.Line>,
         val isHeading: Boolean = false,
         val headingLevel: Int = 0,
         val isListItem: Boolean = false,
+        val isQuoteBlock: Boolean = false,
+        val isCodeBlock: Boolean = false,
+        val isHorizontalRule: Boolean = false,
+        val customLineHeight: Float? = null,
         /** 非空时代表这是一个图片块，整个块只放这一个 ImageElement */
-        val imageElement: LayoutElement.ImageElement? = null
+        val imageElement: LayoutElement.ImageElement? = null,
+        /** 非空时代表这是一个结构化表格块，支持跨页自动重复表头与完整网格绘制 */
+        val tableLayout: TableLayoutData? = null
     )
 
     fun paginate(
@@ -488,10 +542,178 @@ class Paginator {
         }
 
         for (entry in blockLines) {
+            // ----- 1) 水平分割线 (HorizontalRule) -----
+            if (entry.isHorizontalRule) {
+                val ruleBlockH = lineHeight * 0.7f
+                if (currentY + ruleBlockH > maxBottom && currentElements.isNotEmpty()) {
+                    newPage()
+                }
+                val ruleY = currentY + ruleBlockH * 0.5f
+                currentElements.add(
+                    LayoutElement.RuleLine(
+                        x = params.marginLeft,
+                        y = ruleY,
+                        width = params.availableWidth,
+                        height = 0f,
+                        strokeWidth = 0.75f
+                    )
+                )
+                currentY += ruleBlockH + params.paragraphSpacing * 0.5f
+                continue
+            }
+
+            // ----- 2) 结构化表格块 (TableBlock)：完整网格线 + 行原子性 + 跨页自动重复表头 -----
+            if (entry.tableLayout != null) {
+                val tbl = entry.tableLayout
+                val colOffsets = FloatArray(tbl.colWidths.size)
+                var accX = 0f
+                for (c in tbl.colWidths.indices) {
+                    colOffsets[c] = accX
+                    accX += tbl.colWidths[c]
+                }
+                val tableWidth = accX
+
+                val firstRowH = tbl.bodyRows.firstOrNull()?.height ?: 0f
+                val minStartH = (tbl.headerRow?.height ?: 0f) + firstRowH
+                if (currentY + minStartH > maxBottom && currentElements.isNotEmpty()) {
+                    newPage()
+                }
+
+                fun emitTableSlice(sliceRows: List<TableRowLayout>, startY: Float): Float {
+                    if (sliceRows.isEmpty()) return startY
+                    // 顶部外框横线
+                    currentElements.add(
+                        LayoutElement.RuleLine(
+                            x = params.marginLeft,
+                            y = startY,
+                            width = tableWidth,
+                            height = 0f,
+                            strokeWidth = 0.9f
+                        )
+                    )
+                    var rowY = startY
+                    for ((rIdx, row) in sliceRows.withIndex()) {
+                        for (c in tbl.colWidths.indices) {
+                            val cellX = params.marginLeft + colOffsets[c] + tbl.cellPadX
+                            val cellLines = row.cellLines.getOrNull(c) ?: emptyList()
+                            for ((lIdx, cellLine) in cellLines.withIndex()) {
+                                val lineTopY = rowY + tbl.cellPadY + lIdx * tbl.cellLineHeight
+                                val segs = cellLine.segments.map { seg ->
+                                    PositionedSegment(
+                                        text = seg.text,
+                                        x = cellX + seg.x,
+                                        fontSize = seg.fontSize,
+                                        bold = seg.bold,
+                                        italic = seg.italic,
+                                        charSpacing = 0f
+                                    )
+                                }
+                                if (segs.isNotEmpty()) {
+                                    currentElements.add(
+                                        LayoutElement.TextLine(
+                                            segments = segs,
+                                            topY = lineTopY,
+                                            lineHeight = tbl.cellLineHeight,
+                                            fontSize = tbl.tableFontSize
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        rowY += row.height
+                        val isLastInSlice = rIdx == sliceRows.lastIndex
+                        val strokeW = when {
+                            row.isHeader -> 0.85f
+                            isLastInSlice -> 0.9f
+                            else -> 0.4f
+                        }
+                        currentElements.add(
+                            LayoutElement.RuleLine(
+                                x = params.marginLeft,
+                                y = rowY,
+                                width = tableWidth,
+                                height = 0f,
+                                strokeWidth = strokeW
+                            )
+                        )
+                    }
+                    // 绘制垂直列分隔线与左右外框线
+                    val sliceH = (rowY - startY).coerceAtLeast(1f)
+                    currentElements.add(
+                        LayoutElement.RuleLine(
+                            x = params.marginLeft,
+                            y = startY,
+                            width = 0f,
+                            height = sliceH,
+                            strokeWidth = 0.75f
+                        )
+                    )
+                    for (c in 1 until tbl.colWidths.size) {
+                        currentElements.add(
+                            LayoutElement.RuleLine(
+                                x = params.marginLeft + colOffsets[c],
+                                y = startY,
+                                width = 0f,
+                                height = sliceH,
+                                strokeWidth = 0.4f
+                            )
+                        )
+                    }
+                    currentElements.add(
+                        LayoutElement.RuleLine(
+                            x = params.marginLeft + tableWidth,
+                            y = startY,
+                            width = 0f,
+                            height = sliceH,
+                            strokeWidth = 0.75f
+                        )
+                    )
+                    return rowY
+                }
+
+                if (tbl.bodyRows.isEmpty() && tbl.headerRow != null) {
+                    currentY = emitTableSlice(listOf(tbl.headerRow), currentY)
+                } else {
+                    var bodyIdx = 0
+                    while (bodyIdx < tbl.bodyRows.size) {
+                        val sliceRows = mutableListOf<TableRowLayout>()
+                        var sliceH = 0f
+                        if (tbl.headerRow != null) {
+                            sliceRows.add(tbl.headerRow)
+                            sliceH += tbl.headerRow.height
+                        }
+                        var bodyCountInSlice = 0
+                        while (bodyIdx < tbl.bodyRows.size) {
+                            val nextRow = tbl.bodyRows[bodyIdx]
+                            val fits = currentY + sliceH + nextRow.height <= maxBottom + 0.1f
+                            if (fits || (bodyCountInSlice == 0 && currentElements.isEmpty())) {
+                                sliceRows.add(nextRow)
+                                sliceH += nextRow.height
+                                bodyIdx++
+                                bodyCountInSlice++
+                            } else {
+                                break
+                            }
+                        }
+                        if (bodyCountInSlice == 0) {
+                            // 当前页剩余空间连表头+第1行都放不下，换新页重试
+                            newPage()
+                            continue
+                        }
+                        currentY = emitTableSlice(sliceRows, currentY)
+                        if (bodyIdx < tbl.bodyRows.size) {
+                            newPage()
+                        }
+                    }
+                }
+                currentY += params.paragraphSpacing
+                continue
+            }
+
             val lines = entry.lines
             if (lines.isEmpty() && entry.imageElement == null) continue
 
-            // ----- 图片块：根据 imageWrapMode 分发 -----
+            // ----- 3) 图片块：根据 imageWrapMode 分发 -----
             if (entry.imageElement != null) {
                 val img = entry.imageElement
 
@@ -503,11 +725,6 @@ class Paginator {
                 }
 
                 // 上下型（默认）：独占一行，按图片 height 占位。
-                // 修复说明：
-                // 1) 若当前页剩余高度放不下图片且当前页已有内容，先换新页；
-                // 2) 换到新页后，即使图片高度接近 availableHeight（含 paragraphSpacing 可能略超），
-                //    也必须二次钳制高度并正常绘制，绝不能因为 currentY + img.height > maxBottom 把图片静默丢弃！
-                // 3) 图片宽度小于版心宽度时水平居中放置，视觉更平衡。
                 if (currentY + img.height > maxBottom && currentElements.isNotEmpty()) {
                     newPage()
                 }
@@ -528,11 +745,58 @@ class Paginator {
                 continue
             }
 
+            // 本块的实际行高（支持标题放大防拥挤、代码块紧凑行高）
+            val maxBlockFontSize = lines.firstOrNull()?.segments?.maxOfOrNull { it.fontSize } ?: params.fontSize
+            val effectiveLineHeight = entry.customLineHeight
+                ?: if (entry.isHeading) maxOf(lineHeight, maxBlockFontSize * 1.30f) else lineHeight
+
             // Heading: keep with at least 1 line of following content
             if (entry.isHeading && currentElements.isNotEmpty()) {
-                val headingHeight = lines.size * lineHeight + lineHeight
+                val headingHeight = lines.size * effectiveLineHeight + lineHeight
                 if (currentY + headingHeight > maxBottom) {
                     newPage()
+                }
+            }
+
+            val codePadY = if (entry.isCodeBlock) 3.5f else 0f
+            if (entry.isCodeBlock) {
+                if (currentY + effectiveLineHeight + codePadY * 2f > maxBottom && currentElements.isNotEmpty()) {
+                    newPage()
+                }
+                currentY += codePadY
+            }
+
+            var sliceStartY = currentY
+            var sliceHasLines = false
+
+            fun flushBlockSliceDecorations(sliceEndY: Float) {
+                if (!sliceHasLines) return
+                if (entry.isQuoteBlock) {
+                    // 引用块左侧竖线（支持跨页自动分段绘制）
+                    val barX = params.marginLeft + params.fontSize * 0.5f
+                    val barTop = sliceStartY + 1.5f
+                    val barH = (sliceEndY - sliceStartY - 3f).coerceAtLeast(2f)
+                    currentElements.add(
+                        LayoutElement.RuleLine(
+                            x = barX,
+                            y = barTop,
+                            width = 0f,
+                            height = barH,
+                            strokeWidth = 2.0f
+                        )
+                    )
+                }
+                if (entry.isCodeBlock) {
+                    // 代码块 / ASCII 流程图外框细线
+                    val boxTop = (sliceStartY - 2.5f).coerceAtLeast(params.marginTop)
+                    val boxBottom = sliceEndY + 2.0f
+                    val boxH = (boxBottom - boxTop).coerceAtLeast(2f)
+                    val boxLeft = params.marginLeft
+                    val boxW = params.availableWidth
+                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxTop, boxW, 0f, 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxBottom, boxW, 0f, 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(boxLeft, boxTop, 0f, boxH, 0.45f))
+                    currentElements.add(LayoutElement.RuleLine(boxLeft + boxW, boxTop, 0f, boxH, 0.45f))
                 }
             }
 
@@ -541,28 +805,38 @@ class Paginator {
                 val isFirstLineOfBlock = lineIdx == 0
 
                 // 孤行控制（Orphan control）：段落首行不单独留在页面最底部
-                if (!entry.isHeading && isFirstLineOfBlock &&
+                if (!entry.isHeading && !entry.isCodeBlock && isFirstLineOfBlock &&
                     params.enableOrphanControl && lines.size > 1
                 ) {
-                    if (currentY + lineHeight * 2 > maxBottom && currentY > params.marginTop + 1f) {
+                    if (currentY + effectiveLineHeight * 2 > maxBottom && currentY > params.marginTop + 1f) {
+                        flushBlockSliceDecorations(currentY)
                         newPage()
+                        sliceStartY = currentY
+                        sliceHasLines = false
                     }
                 }
 
                 // 寡行控制（Widow control）：段落末行不单独落在下一页最顶部
-                // 当排到倒数第 2 行时，若当前页只够放倒数第 2 行而放不下最后 1 行，
-                // 提前换页，让最后 2 行一起落到下一页。
-                if (!entry.isHeading && lineIdx == lines.size - 2 &&
+                if (!entry.isHeading && !entry.isCodeBlock && lineIdx == lines.size - 2 &&
                     params.enableWidowControl && lines.size >= 3
                 ) {
-                    if (currentY + lineHeight * 2 > maxBottom && currentY > params.marginTop + 1f) {
+                    if (currentY + effectiveLineHeight * 2 > maxBottom && currentY > params.marginTop + 1f) {
+                        flushBlockSliceDecorations(currentY)
                         newPage()
+                        sliceStartY = currentY
+                        sliceHasLines = false
                     }
                 }
 
                 // Page break if line doesn't fit
-                if (currentY + lineHeight > maxBottom && currentElements.isNotEmpty()) {
+                if (currentY + effectiveLineHeight > maxBottom && currentElements.isNotEmpty()) {
+                    flushBlockSliceDecorations(currentY)
                     newPage()
+                    if (entry.isCodeBlock) {
+                        currentY += codePadY
+                    }
+                    sliceStartY = currentY
+                    sliceHasLines = false
                 }
 
                 // ---- 行内水平对齐与标点悬挂（GB/T 15834 & W3C CLREQ） ----
@@ -573,12 +847,6 @@ class Paginator {
                 // 本行真正可用的横向宽度（已扣掉缩进）
                 val avail = (params.availableWidth - lineIndent).coerceAtLeast(0f)
 
-                // 核心修复：解决「行尾标点导致前置文字间距被压缩」的问题
-                // 1) 当行末未溢出（rawContentWidth <= avail）时，标点本来就是该行正常字格的一部分，
-                //    按 rawContentWidth 计算正向拉伸，使该行与上下行的汉字网格严格对齐（抄栅格）。
-                // 2) 当行末因「避头」挤入了标点导致 rawContentWidth > avail 时，启动「标点悬挂」：
-                //    扣除行尾标点的右半格空白与光学悬挂量（line.trailingOpticalHangWidth），
-                //    让行内正文依然按照正常行宽微拉伸或保持原字距，绝不对正文施加负 charSpacing 压缩！
                 val effectiveContentWidth = if (rawContentWidth > avail && line.trailingOpticalHangWidth > 0f) {
                     (rawContentWidth - line.trailingOpticalHangWidth).coerceAtLeast(0f)
                 } else {
@@ -594,16 +862,16 @@ class Paginator {
                     (params.textAlignment == TextAlignment.LEFT ||
                         params.textAlignment == TextAlignment.JUSTIFY)
 
-                val isEndLine = isLastLineOfBlock || line.isHardBreak
+                val isEndLine = isLastLineOfBlock || line.isHardBreak || entry.isCodeBlock
                 val stretchActive = (params.textAlignment == TextAlignment.JUSTIFY || forceJustify) &&
-                    !isEndLine && !entry.isHeading && diff > 0.5f
+                    !isEndLine && !entry.isHeading && !entry.isCodeBlock && diff > 0.5f
 
                 // 拉伸上限 0.25em，压缩下限 0.15em
                 val maxStretch = lineFontSize * 0.25f
                 val maxCompress = lineFontSize * 0.15f
 
                 val charSpacing = when {
-                    gaps <= 0 -> 0f
+                    entry.isCodeBlock || gaps <= 0 -> 0f
                     // 标点悬挂保护：若行尾是避头标点，即使扣除光学悬挂后仍微超（<= 1em），
                     // 也保持 0 字距让标点自然悬挂于右页边，绝不压缩正文文字间距！
                     diff < -0.01f && line.endsWithHangingPunct && diff >= -lineFontSize -> 0f
@@ -616,10 +884,14 @@ class Paginator {
                 // 字距生效后本行的实际绘制宽度（CENTER / RIGHT 按它算位移）
                 val drawnWidth = effectiveContentWidth + charSpacing * gaps
 
-                val shift = when (params.textAlignment) {
-                    TextAlignment.LEFT, TextAlignment.JUSTIFY -> 0f
-                    TextAlignment.RIGHT -> (avail - drawnWidth).coerceAtLeast(0f)
-                    TextAlignment.CENTER -> ((avail - drawnWidth) / 2f).coerceAtLeast(0f)
+                val shift = if (entry.isCodeBlock) {
+                    0f
+                } else {
+                    when (params.textAlignment) {
+                        TextAlignment.LEFT, TextAlignment.JUSTIFY -> 0f
+                        TextAlignment.RIGHT -> (avail - drawnWidth).coerceAtLeast(0f)
+                        TextAlignment.CENTER -> ((avail - drawnWidth) / 2f).coerceAtLeast(0f)
+                    }
                 }
 
                 // 同一行内若有多个 segment（粗体/字号变化或中西文混排间隙切分出的 segment），
@@ -642,12 +914,18 @@ class Paginator {
                     LayoutElement.TextLine(
                         segments = segments,
                         topY = currentY,
-                        lineHeight = lineHeight,
+                        lineHeight = effectiveLineHeight,
                         fontSize = segments.firstOrNull()?.fontSize ?: params.fontSize
                     )
                 )
 
-                currentY += lineHeight
+                sliceHasLines = true
+                currentY += effectiveLineHeight
+            }
+
+            flushBlockSliceDecorations(currentY)
+            if (entry.isCodeBlock) {
+                currentY += codePadY
             }
 
             // Paragraph spacing after non-heading blocks
@@ -713,7 +991,7 @@ class Paginator {
     private fun elementBottom(el: LayoutElement, lineHeight: Float): Float = when (el) {
         is LayoutElement.TextLine -> el.topY + el.lineHeight
         is LayoutElement.ImageElement -> el.y + el.height
-        is LayoutElement.RuleLine -> el.y
+        is LayoutElement.RuleLine -> el.y + el.height
     }
 
     private fun pageShiftyBy(page: PageLayout, delta: Float): PageLayout {
@@ -791,42 +1069,81 @@ class TypesettingEngine(
                 }
 
                 is Block.ListItem -> {
-                    // 修复：解析器产生的一级列表 level = 0，旧代码 level * 20f 算得 0 导致一级列表无缩进；
-                    // 改为相对 fontSize 的动态缩进：(level + 1) * 1.25em。
-                    val indent = (block.level + 1) * params.fontSize * 1.25f
-                    val prefix = if (block.ordered) "${block.orderIndex}. " else "• "
-                    val runsWithPrefix = listOf(TextRun(prefix)) + block.runs
-                    val lines = lineBreaker.breakLines(
-                        runsWithPrefix, availableWidth, params.fontSize,
+                    // 多级列表与悬挂缩进（Hanging Indent）：
+                    // 1) 不同层级使用区分明显的列表符号（0级 •，1级 ◦，2级及以上 ▪），并经字体字形可用性校验；
+                    // 2) 正文左边界统一对齐在 bodyLeftIndent，首行列表符号悬挂在 bodyLeftIndent 左侧，
+                    //    折行后的第 2、3 行与首行正文文字严格左对齐，不再退到符号下方。
+                    val bulletChar = when (block.level) {
+                        0 -> measurer.resolveSupportedChar('•')
+                        1 -> measurer.resolveSupportedChar('◦')
+                        else -> measurer.resolveSupportedChar('▪')
+                    }
+                    val prefix = if (block.ordered) "${block.orderIndex}. " else "$bulletChar "
+                    val prefixWidth = measurer.measureText(prefix, params.fontSize, bold = block.ordered)
+                    val baseIndent = (block.level + 1) * params.fontSize * 1.15f
+                    val bodyLeftIndent = (baseIndent + prefixWidth).coerceAtMost(availableWidth * 0.45f)
+                    val prefixX = (bodyLeftIndent - prefixWidth).coerceAtLeast(0f)
+
+                    val bodyLines = lineBreaker.breakLines(
+                        block.runs, availableWidth, params.fontSize,
                         firstLineIndent = 0f,
-                        leftIndent = indent
+                        leftIndent = bodyLeftIndent
                     )
+                    val lines = if (bodyLines.isNotEmpty()) {
+                        val first = bodyLines.first()
+                        val prefixSeg = LineBreaker.LineSegment(
+                            text = prefix,
+                            x = prefixX,
+                            fontSize = params.fontSize,
+                            bold = block.ordered,
+                            italic = false
+                        )
+                        listOf(first.copy(segments = listOf(prefixSeg) + first.segments)) + bodyLines.drop(1)
+                    } else {
+                        val prefixSeg = LineBreaker.LineSegment(
+                            text = prefix,
+                            x = prefixX,
+                            fontSize = params.fontSize,
+                            bold = block.ordered,
+                            italic = false
+                        )
+                        listOf(
+                            LineBreaker.Line(
+                                segments = listOf(prefixSeg),
+                                width = bodyLeftIndent,
+                                indent = prefixX,
+                                isHardBreak = true
+                            )
+                        )
+                    }
                     blockLinesList.add(Paginator.BlockLines(lines, isListItem = true))
                 }
 
                 is Block.QuoteBlock -> {
-                    // 引用块左缩进与字号联动（1.5em），避免大字号下缩进不明显、小字号下缩进过宽
-                    val indent = params.fontSize * 1.5f
+                    // 引用块：左侧留出 1.35em 缩进供 Paginator 绘制左侧竖线，取消首行额外 2em 缩进以适配多段/列表型 Callout
+                    val indent = params.fontSize * 1.35f
                     val lines = lineBreaker.breakLines(
                         block.runs, availableWidth, params.fontSize,
-                        paragraphFirstLineIndent,
+                        firstLineIndent = 0f,
                         leftIndent = indent
                     )
-                    blockLinesList.add(Paginator.BlockLines(lines))
+                    blockLinesList.add(Paginator.BlockLines(lines, isQuoteBlock = true))
                 }
 
                 is Block.CodeBlock -> {
-                    val codeFontSize = params.fontSize * 0.85f
-                    val indent = params.fontSize * 1.0f
-                    val codeLines = block.text.split('\n').flatMap { codeLine ->
-                        lineBreaker.breakLines(
-                            listOf(TextRun(codeLine.ifEmpty { " " })),
-                            availableWidth, codeFontSize,
-                            firstLineIndent = 0f,
-                            leftIndent = indent
-                        )
+                    val codeBlockLines = layoutCodeBlock(block, availableWidth, params.fontSize)
+                    blockLinesList.add(codeBlockLines)
+                }
+
+                is Block.TableBlock -> {
+                    val tableLayout = layoutTableBlock(block, availableWidth, params)
+                    if (tableLayout != null) {
+                        blockLinesList.add(Paginator.BlockLines(emptyList(), tableLayout = tableLayout))
                     }
-                    blockLinesList.add(Paginator.BlockLines(codeLines))
+                }
+
+                is Block.HorizontalRule -> {
+                    blockLinesList.add(Paginator.BlockLines(emptyList(), isHorizontalRule = true))
                 }
 
                 is Block.ImageBlock -> {
@@ -858,6 +1175,313 @@ class TypesettingEngine(
     }
 
     /**
+     * 代码块与 ASCII / Unicode 框线图（如决策树、餐盘比例图、流程图）自适应排版引擎：
+     *
+     * 核心设计：
+     * 1. **东亚半角/全角严格网格定位（0.5em / 1.0em Monospace Grid）**：
+     *    传统调用 LineBreaker.breakLines 会吞掉每行行首缩进空格，且比例字体中空格仅约 0.26em、
+     *    ASCII 字母约 0.52em、汉字 1.0em，导致多行 ASCII 框线图的竖线 `│` 与箭头 `▲▼` 严重错位。
+     *    现改为按半角列宽（`halfEm = codeFontSize * 0.5f`）逐字符计算精确网格坐标：
+     *    - 空白字符不生成 glyph，直接推进网格列游标，彻底消除比例字体空格宽度偏差；
+     *    - 每个可见字符（经 resolveSupportedChar 降级保护）精准定位在 `padX + col * halfEm`。
+     * 2. **基于最长行宽度的字号自适应缩放（Auto-Fit Font Scaling）**：
+     *    统计整个代码块的最大半角列数 `maxCols`，若默认字号（`0.82 * fontSize`）下超出页面可用宽度，
+     *    自动等比缩小字号（下限 `5.0pt`），使 50~65 列的流程图/架构图在 6 英寸 Kindle 窄屏上完整单行呈现、绝不中途折行错位。
+     */
+    private fun layoutCodeBlock(
+        block: Block.CodeBlock,
+        availableWidth: Float,
+        baseFontSize: Float
+    ): Paginator.BlockLines {
+        val rawLines = block.text
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .split('\n')
+            .map { it.replace("\t", "    ") }
+
+        val maxCols = rawLines.maxOfOrNull { line ->
+            line.sumOf { c -> ChineseTypography.eastAsianColWidth(c) }
+        }?.coerceAtLeast(1) ?: 1
+
+        val padX = (baseFontSize * 0.45f).coerceAtLeast(4f)
+        val innerWidth = (availableWidth - padX * 2f).coerceAtLeast(40f)
+        val defaultCodeSize = baseFontSize * 0.82f
+
+        // 预留 +1 半角列（0.5em），容纳行尾 1.0em 宽度的右框线字符（如 ┐、│、┘）
+        val neededCols = maxCols + 1
+        val idealFontSize = innerWidth / (neededCols * 0.5f)
+        val codeFontSize = minOf(defaultCodeSize, idealFontSize).coerceAtLeast(5.0f)
+        val halfEm = codeFontSize * 0.5f
+        val maxColsPerLine = (innerWidth / halfEm).toInt().coerceAtLeast(8)
+
+        val resultLines = mutableListOf<LineBreaker.Line>()
+
+        for (rawLine in rawLines) {
+            if (rawLine.isBlank()) {
+                // 保留空行高度
+                resultLines.add(
+                    LineBreaker.Line(
+                        segments = listOf(
+                            LineBreaker.LineSegment(
+                                text = " ",
+                                x = padX,
+                                fontSize = codeFontSize,
+                                bold = false,
+                                italic = false
+                            )
+                        ),
+                        width = padX,
+                        indent = padX,
+                        isHardBreak = true
+                    )
+                )
+                continue
+            }
+
+            var col = 0
+            var currentSegs = mutableListOf<LineBreaker.LineSegment>()
+            var maxLineX = padX
+
+            for (ch in rawLine) {
+                val wCols = ChineseTypography.eastAsianColWidth(ch)
+                // 仅当单行极端超长（即便缩到 5.0pt 仍超出页面宽度）时才安全折行
+                if (col + wCols > maxColsPerLine && currentSegs.isNotEmpty()) {
+                    resultLines.add(
+                        LineBreaker.Line(
+                            segments = currentSegs,
+                            width = maxLineX,
+                            indent = padX,
+                            isHardBreak = true
+                        )
+                    )
+                    currentSegs = mutableListOf()
+                    col = 0
+                    maxLineX = padX
+                }
+
+                if (ch != ' ') {
+                    val safeChar = measurer.resolveSupportedChar(ch, bold = false)
+                    val charX = padX + col * halfEm
+                    currentSegs.add(
+                        LineBreaker.LineSegment(
+                            text = safeChar.toString(),
+                            x = charX,
+                            fontSize = codeFontSize,
+                            bold = false,
+                            italic = false
+                        )
+                    )
+                    maxLineX = charX + wCols * halfEm
+                }
+                col += wCols
+            }
+
+            if (currentSegs.isNotEmpty()) {
+                resultLines.add(
+                    LineBreaker.Line(
+                        segments = currentSegs,
+                        width = maxLineX,
+                        indent = padX,
+                        isHardBreak = true
+                    )
+                )
+            }
+        }
+
+        return Paginator.BlockLines(
+            lines = resultLines,
+            isCodeBlock = true,
+            customLineHeight = codeFontSize * 1.35f
+        )
+    }
+
+    /**
+     * 结构化表格（Block.TableBlock）智能列宽分配与单元格折行排版引擎：
+     *
+     * 核心设计：
+     * 1. **按列数自适应字号**：2 列采用 0.90x 正文字号，3 列 0.85x，4 列 0.80x，5 列及以上 0.74x（不低于 6.5pt）。
+     * 2. **智能两段式列宽分配（防窄列挤压折行）**：
+     *    - 先测量每列的最大自然单行宽度 `maxNaturalW[c]`；
+     *    - 若所有列自然宽度之和 `<= availableWidth`，则按比例舒展铺满版心；
+     *    - 若超出 `availableWidth`，对于自然宽度不超过平均列宽 `0.95x` 的紧凑列（如「营养素」「RNI」「状态」），
+     *      直接分配其完整自然宽度使其**零折行**；剩余宽度按 `width^0.75` 权重分配给长文本描述列，
+     *      并保证每列不低于最小可读宽度 `minColW`。
+     * 3. **单元格内多样式折行**：支持单元格内粗体、斜体，且将单元格内每行标记为 `isHardBreak = true`，
+     *    避免窄列文字被强制两端对齐拉出巨大字距空洞。
+     */
+    private fun layoutTableBlock(
+        block: Block.TableBlock,
+        availableWidth: Float,
+        params: TypesettingParams
+    ): Paginator.TableLayoutData? {
+        val colCount = maxOf(
+            block.headers.size,
+            block.rows.maxOfOrNull { it.size } ?: 0
+        )
+        if (colCount <= 0) return null
+
+        val scale = when {
+            colCount <= 2 -> 0.90f
+            colCount == 3 -> 0.85f
+            colCount == 4 -> 0.80f
+            else -> 0.74f
+        }
+        val tableFontSize = (params.fontSize * scale).coerceIn(6.5f, params.fontSize)
+        val cellLineHeight = tableFontSize * 1.32f
+        val cellPadX = (tableFontSize * 0.35f).coerceAtLeast(3f)
+        val cellPadY = (tableFontSize * 0.30f).coerceAtLeast(2.5f)
+
+        // 1) 测量每一列的最大自然宽度
+        val minColW = (tableFontSize * 2.2f + cellPadX * 2f).coerceAtMost(availableWidth / colCount)
+        val maxNaturalW = FloatArray(colCount) { minColW }
+
+        fun measureCellNaturalWidth(runs: List<TextRun>, isHeader: Boolean): Float {
+            if (runs.isEmpty()) return minColW
+            var maxLineW = 0f
+            var currentW = 0f
+            for (run in runs) {
+                val parts = run.text.split('\n')
+                for ((idx, part) in parts.withIndex()) {
+                    if (idx > 0) {
+                        maxLineW = maxOf(maxLineW, currentW)
+                        currentW = 0f
+                    }
+                    currentW += measurer.measureText(part, tableFontSize, bold = isHeader || run.bold)
+                }
+            }
+            maxLineW = maxOf(maxLineW, currentW)
+            // 表头略加 1.08 权重，避免表头文字差一两个像素被折行
+            val factor = if (isHeader) 1.08f else 1.0f
+            return (maxLineW * factor + cellPadX * 2f).coerceAtLeast(minColW)
+        }
+
+        for (c in 0 until colCount) {
+            val hCell = block.headers.getOrNull(c)
+            if (hCell != null) {
+                maxNaturalW[c] = maxOf(maxNaturalW[c], measureCellNaturalWidth(hCell, isHeader = true))
+            }
+            for (row in block.rows) {
+                val bCell = row.getOrNull(c)
+                if (bCell != null) {
+                    maxNaturalW[c] = maxOf(maxNaturalW[c], measureCellNaturalWidth(bCell, isHeader = false))
+                }
+            }
+        }
+
+        // 2) 计算每列最终宽度 colWidths
+        val totalNatural = maxNaturalW.sum()
+        val colWidths = FloatArray(colCount)
+        if (totalNatural <= availableWidth) {
+            val ratio = availableWidth / totalNatural.coerceAtLeast(1f)
+            for (c in 0 until colCount) {
+                colWidths[c] = maxNaturalW[c] * ratio
+            }
+        } else {
+            val avgColW = availableWidth / colCount
+            val compactThreshold = avgColW * 0.95f
+            var lockedWidth = 0f
+            val isCompact = BooleanArray(colCount)
+            var flexCount = 0
+            for (c in 0 until colCount) {
+                if (maxNaturalW[c] <= compactThreshold) {
+                    isCompact[c] = true
+                    colWidths[c] = maxNaturalW[c]
+                    lockedWidth += colWidths[c]
+                } else {
+                    flexCount++
+                }
+            }
+
+            val remainingW = (availableWidth - lockedWidth).coerceAtLeast(flexCount * minColW)
+            if (flexCount > 0 && lockedWidth < availableWidth * 0.75f) {
+                val weights = FloatArray(colCount) { c ->
+                    if (isCompact[c]) 0f else Math.pow(maxNaturalW[c].toDouble(), 0.72).toFloat()
+                }
+                val weightSum = weights.sum().coerceAtLeast(0.001f)
+                for (c in 0 until colCount) {
+                    if (!isCompact[c]) {
+                        colWidths[c] = (remainingW * (weights[c] / weightSum)).coerceAtLeast(minColW)
+                    }
+                }
+            } else {
+                // 所有列都较宽：全部按阻尼权重分配
+                val weights = FloatArray(colCount) { c ->
+                    Math.pow(maxNaturalW[c].toDouble(), 0.72).toFloat()
+                }
+                val weightSum = weights.sum().coerceAtLeast(0.001f)
+                for (c in 0 until colCount) {
+                    colWidths[c] = (availableWidth * (weights[c] / weightSum)).coerceAtLeast(minColW)
+                }
+            }
+
+            // 归一化使总宽度严格等于 availableWidth
+            val finalSum = colWidths.sum().coerceAtLeast(1f)
+            val normRatio = availableWidth / finalSum
+            for (c in 0 until colCount) {
+                colWidths[c] *= normRatio
+            }
+        }
+
+        // 3) 对表头行与数据行执行单元格内折行
+        fun buildRowLayout(cells: List<List<TextRun>>, isHeader: Boolean): Paginator.TableRowLayout {
+            val cellLinesList = ArrayList<List<LineBreaker.Line>>(colCount)
+            var maxLinesInRow = 1
+            for (c in 0 until colCount) {
+                val rawRuns = cells.getOrNull(c) ?: emptyList()
+                val styledRuns = rawRuns.map { run ->
+                    // 同时对其中的特殊字符执行字体可用性降级替换
+                    val safeStr = buildString(run.text.length) {
+                        for (ch in run.text) {
+                            append(measurer.resolveSupportedChar(ch, bold = isHeader || run.bold))
+                        }
+                    }
+                    run.copy(
+                        text = safeStr,
+                        bold = isHeader || run.bold,
+                        fontSize = tableFontSize
+                    )
+                }
+                val contentW = (colWidths[c] - cellPadX * 2f).coerceAtLeast(tableFontSize)
+                val broken = lineBreaker.breakLines(
+                    runs = styledRuns,
+                    availableWidth = contentW,
+                    fontSize = tableFontSize,
+                    firstLineIndent = 0f,
+                    leftIndent = 0f
+                ).map { it.copy(isHardBreak = true) }
+                cellLinesList.add(broken)
+                if (broken.size > maxLinesInRow) {
+                    maxLinesInRow = broken.size
+                }
+            }
+            val rowHeight = maxLinesInRow * cellLineHeight + cellPadY * 2f
+            return Paginator.TableRowLayout(
+                cellLines = cellLinesList,
+                height = rowHeight,
+                isHeader = isHeader
+            )
+        }
+
+        val headerRowLayout = if (block.headers.isNotEmpty()) {
+            buildRowLayout(block.headers, isHeader = true)
+        } else null
+
+        val bodyRowLayouts = block.rows.map { rowCells ->
+            buildRowLayout(rowCells, isHeader = false)
+        }
+
+        return Paginator.TableLayoutData(
+            colWidths = colWidths.toList(),
+            headerRow = headerRowLayout,
+            bodyRows = bodyRowLayouts,
+            cellPadX = cellPadX,
+            cellPadY = cellPadY,
+            cellLineHeight = cellLineHeight,
+            tableFontSize = tableFontSize
+        )
+    }
+
+    /**
      * 等比缩放图片至页面可用宽高范围内。
      *
      * 关键修复：
@@ -886,14 +1510,21 @@ class TypesettingEngine(
         return w.coerceAtLeast(1f) to h.coerceAtLeast(1f)
     }
 
+    /**
+     * 标题字号层级缩放系数（H1 ~ H6）：
+     * 修复旧版在 baseScale = 1.5 时 H4 (1.5 * 0.62 = 0.93x) 比正文还小的问题，
+     * 改为基于 (baseScale - 1.0) 的递减插值，确保 H1~H6 均大于等于正文字号且层次分明。
+     */
     private fun headingScaleFor(level: Int, baseScale: Float): Float {
+        val extra = (baseScale - 1.0f).coerceAtLeast(0.2f)
         return when (level) {
-            1 -> baseScale
-            2 -> baseScale * 0.85f
-            3 -> baseScale * 0.72f
-            4 -> baseScale * 0.62f
-            5 -> baseScale * 0.55f
-            else -> baseScale * 0.5f
+            1 -> 1.0f + extra * 1.00f   // 默认 1.50x
+            2 -> 1.0f + extra * 0.72f   // 默认 1.36x
+            3 -> 1.0f + extra * 0.48f   // 默认 1.24x
+            4 -> 1.0f + extra * 0.28f   // 默认 1.14x
+            5 -> 1.0f + extra * 0.14f   // 默认 1.07x
+            else -> 1.0f + extra * 0.06f // 默认 1.03x
         }
     }
 }
+

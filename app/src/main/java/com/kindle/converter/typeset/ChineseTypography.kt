@@ -147,5 +147,75 @@ object ChineseTypography {
     fun isLatinWordBoundary(c: Char): Boolean {
         return c.isWhitespace() || c in lineStartForbidden || c in lineEndForbidden
     }
+
+    /**
+     * 判定是否为制表符/框线字符或几何箭头符号（Unicode Box Drawing 0x2500..0x257F、
+     * Block Elements & Geometric Shapes 0x2580..0x25FF、Arrows 0x2190..0x21FF）。
+     */
+    fun isBoxDrawingOrGeometric(c: Char): Boolean {
+        val code = c.code
+        return code in 0x2500..0x25FF || code in 0x2190..0x21FF
+    }
+
+    /**
+     * 计算字符在代码块 / ASCII 流程图中的半角网格列宽（1 列 = 0.5 em，2 列 = 1.0 em）。
+     *
+     * 规范依据：
+     * - 现代编辑器（VS Code / JetBrains / Markdown 流程图）中，汉字、假名、全角标点占 2 个半角列（1.0 em）；
+     * - ASCII 字符、空格、Unicode 制表框线（┌─┐│└┘├┤┬┴┼）与方向箭头（▲▼◄►→←↑↓）占 1 个半角列（0.5 em）。
+     * 按此网格坐标定位代码块中的每个字符，可确保包含中英文混排的 ASCII 树状图、流程图、餐盘比例图在任何字体下严格垂直对齐。
+     */
+    fun eastAsianColWidth(c: Char): Int {
+        val code = c.code
+        return if (
+            isChinese(c) ||
+            code in 0x3000..0x30FF ||
+            code in 0xFF01..0xFF60 ||
+            c in setOf('“', '”', '‘', '’', '—', '…', '￥')
+        ) {
+            2
+        } else {
+            1
+        }
+    }
+
+    /**
+     * 特殊符号字形降级映射表（Glyph Fallback Table）：
+     * 当用户选择的字体（如部分精简版中文字体）缺失几何箭头（►◄▲▼）、空心圆点（◦）、方点（▪）或框线字形时，
+     * 自动降级为几乎所有 CJK 字体必含的等价符号（→←↑↓、·、•、+、-、|），避免被 PdfGenerator 静默丢弃。
+     */
+    val glyphFallbacks: Map<Char, List<Char>> = mapOf(
+        '►' to listOf('→', '>'),
+        '▶' to listOf('→', '>'),
+        '◄' to listOf('←', '<'),
+        '◀' to listOf('←', '<'),
+        '▲' to listOf('↑', '^'),
+        '△' to listOf('↑', '^'),
+        '▼' to listOf('↓', 'v'),
+        '▽' to listOf('↓', 'v'),
+        '◦' to listOf('·', '•', '-'),
+        '○' to listOf('·', 'o'),
+        '▪' to listOf('•', '·', '*'),
+        '▫' to listOf('·', '-'),
+        '■' to listOf('•', '#'),
+        '✓' to listOf('√', 'v'),
+        '✔' to listOf('√', 'v'),
+        '✗' to listOf('×', 'x'),
+        '✘' to listOf('×', 'x'),
+        '─' to listOf('—', '-'),
+        '━' to listOf('—', '-'),
+        '│' to listOf('|'),
+        '┃' to listOf('|'),
+        '┌' to listOf('+'),
+        '┐' to listOf('+'),
+        '└' to listOf('+'),
+        '┘' to listOf('+'),
+        '├' to listOf('+'),
+        '┤' to listOf('+'),
+        '┬' to listOf('+'),
+        '┴' to listOf('+'),
+        '┼' to listOf('+')
+    )
 }
+
 

@@ -159,15 +159,14 @@ fun PreviewCanvas(
 
                     is LayoutElement.RuleLine -> {
                         val linePaint = Paint().apply {
-                            color = android.graphics.Color.GRAY
-                            strokeWidth = element.strokeWidth * finalScale
+                            color = android.graphics.Color.rgb(90, 90, 90)
+                            strokeWidth = (element.strokeWidth * finalScale).coerceAtLeast(1f)
                         }
-                        val y = startY + element.y * finalScale
-                        canvas.nativeCanvas.drawLine(
-                            startX + element.x * finalScale, y,
-                            startX + (element.x + element.width) * finalScale, y,
-                            linePaint
-                        )
+                        val x1 = startX + element.x * finalScale
+                        val y1 = startY + element.y * finalScale
+                        val x2 = startX + (element.x + element.width) * finalScale
+                        val y2 = startY + (element.y + element.height) * finalScale
+                        canvas.nativeCanvas.drawLine(x1, y1, x2, y2, linePaint)
                     }
 
                     is LayoutElement.ImageElement -> {

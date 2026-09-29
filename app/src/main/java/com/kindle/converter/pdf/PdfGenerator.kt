@@ -16,6 +16,8 @@ import com.tom_roush.pdfbox.pdmodel.font.PDType0Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
+import com.tom_roush.pdfbox.pdmodel.graphics.state.RenderingMode
+import com.kindle.converter.typeset.ChineseTypography
 import android.graphics.BitmapFactory
 import java.io.File
 
@@ -25,7 +27,8 @@ import java.io.File
  * Key design decisions:
  * - Font is reloaded into the output document (PdfBox requirement)
  * - Y-axis is flipped: layout y from top → PDF y from bottom
- * - showText errors are caught per-segment (unsupported chars skipped)
+ * - showText errors are caught per-segment (unsupported chars use fallback or are skipped)
+ * - Synthetic bold (RenderingMode.FILL_STROKE) is applied when boldFont === regularFont
  * - Bookmarks are added from TOC entries
  */
 class PdfGenerator(private val context: Context, private val fontManager: FontManager) {
@@ -105,47 +108,62 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                 is LayoutElement.TextLine -> {
                     for (seg in element.segments) {
                         val font = if (seg.bold && boldFont !== regularFont) boldFont else regularFont
+                        val needSyntheticBold = seg.bold && boldFont === regularFont
                         // Baseline: topY + ascent (approx fontSize * 0.8)
                         // PDF y is from bottom: pdfY = pageHeight - topY - ascent
                         val baselineY = pageHeight - element.topY - seg.fontSize * 0.8f
 
-                        // Filter out characters the font can't encode
+                        // Filter or fallback characters the font can't encode
                         val safeText = filterSupportedChars(seg.text, font)
                         if (safeText.isEmpty()) continue
 
                         // v9 修复（关键）：PDF 的 Tc 单位是 unscaled text space units，
                         // 在默认文本矩阵下就等于 pt，**不是** 1/1000 em。
-                        // 字形位移公式 tx = ((w0 - Tj/1000) * Tfs + Tc + Tw) * Th —— Tc 不乘 Tfs，
-                        // 所以 charSpacing 的 pt 值要原样传入。
-                        // 旧代码乘了 1000/fontSize，在 12pt 下把字距放大约 83 倍，
-                        // 导致所有两端对齐的行整行飞出右页边（就是"右侧溢出 + 排版乱七八糟"的真凶）。
                         val charSpacingTc = seg.charSpacing
 
                         try {
+                            if (needSyntheticBold) {
+                                // 伪粗体（Synthetic Bold）：当用户只导入了单字重 Regular 字体时，
+                                // 使用 FILL_STROKE 描边填充模式加粗（描边宽度 0.032 * fontSize），
+                                // 使标题、表头、行内 **加粗** 在 Kindle 墨水屏 PDF 上真正呈现黑体加粗效果。
+                                contentStream.setLineWidth((seg.fontSize * 0.032f).coerceAtLeast(0.25f))
+                            }
                             contentStream.beginText()
                             contentStream.setFont(font, seg.fontSize)
+                            if (needSyntheticBold) {
+                                contentStream.setRenderingMode(RenderingMode.FILL_STROKE)
+                            }
                             if (charSpacingTc != 0f) {
                                 contentStream.setCharacterSpacing(charSpacingTc)
                             }
                             contentStream.newLineAtOffset(seg.x, baselineY)
                             contentStream.showText(safeText)
+                            if (needSyntheticBold) {
+                                contentStream.setRenderingMode(RenderingMode.FILL)
+                            }
                             contentStream.endText()
                             // 重置回 0，避免影响后续非 JUSTIFY segment
                             if (charSpacingTc != 0f) {
                                 contentStream.setCharacterSpacing(0f)
                             }
                         } catch (e: Exception) {
-                            try { contentStream.endText() } catch (_: Exception) {}
+                            try {
+                                if (needSyntheticBold) {
+                                    contentStream.setRenderingMode(RenderingMode.FILL)
+                                }
+                                contentStream.endText()
+                            } catch (_: Exception) {}
                         }
                     }
                 }
 
                 is LayoutElement.RuleLine -> {
-                    val y = pageHeight - element.y
+                    val y1 = pageHeight - element.y
+                    val y2 = pageHeight - (element.y + element.height)
                     try {
                         contentStream.setLineWidth(element.strokeWidth)
-                        contentStream.moveTo(element.x, y)
-                        contentStream.lineTo(element.x + element.width, y)
+                        contentStream.moveTo(element.x, y1)
+                        contentStream.lineTo(element.x + element.width, y2)
                         contentStream.stroke()
                     } catch (e: Exception) {}
                 }
@@ -211,8 +229,8 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
     }
 
     /**
-     * Filter out characters that the font cannot encode.
-     * PdfBox throws on unsupported characters, so we proactively remove them.
+     * Filter out characters that the font cannot encode, attempting ChineseTypography.glyphFallbacks
+     * (e.g., ► -> →, ◦ -> ·, ▪ -> •) before dropping a character.
      */
     private fun filterSupportedChars(text: String, font: PDFont): String {
         val sb = StringBuilder(text.length)
@@ -221,8 +239,18 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                 font.encode(c.toString())
                 sb.append(c)
             } catch (e: Exception) {
-                // Skip unsupported character
-                // Could replace with a placeholder
+                val fallbacks = ChineseTypography.glyphFallbacks[c]
+                if (fallbacks != null) {
+                    for (fb in fallbacks) {
+                        try {
+                            font.encode(fb.toString())
+                            sb.append(fb)
+                            break
+                        } catch (_: Exception) {
+                            // try next fallback
+                        }
+                    }
+                }
             }
         }
         return sb.toString()

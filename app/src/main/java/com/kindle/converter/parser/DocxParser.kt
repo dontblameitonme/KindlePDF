@@ -143,11 +143,7 @@ class DocxParser {
                         }
                     }
                     "tbl", "w:tbl" -> {
-                        // 遍历表格内的所有段落，保证表格中的文字与插图不丢失
-                        for (p in getElementsByTagNameLocal(child, "p")) {
-                            val emitted = parseParagraphBlocks(p, rels, entries)
-                            blocks.addAll(emitted)
-                        }
+                        parseTableBlocks(child, rels, entries, blocks)
                     }
                     "sdt", "w:sdt" -> {
                         // 结构化文档标签（目录/内容控件）内部包含 sdtContent
@@ -160,6 +156,70 @@ class DocxParser {
             }
             child = child.nextSibling
         }
+    }
+
+    /**
+     * 将 DOCX `<w:tbl>` 解析为结构化 [Block.TableBlock]，同时保留单元格内的内嵌图片。
+     */
+    private fun parseTableBlocks(
+        tbl: Element,
+        rels: Map<String, String>,
+        entries: Map<String, ByteArray>,
+        blocks: MutableList<Block>
+    ) {
+        val allRows = mutableListOf<List<List<TextRun>>>()
+        val trailingImages = mutableListOf<Block.ImageBlock>()
+
+        var trNode: Node? = tbl.firstChild
+        while (trNode != null) {
+            if (trNode is Element && (trNode.localName ?: trNode.tagName).endsWith("tr")) {
+                val rowCells = mutableListOf<List<TextRun>>()
+                var tcNode: Node? = trNode.firstChild
+                while (tcNode != null) {
+                    if (tcNode is Element && (tcNode.localName ?: tcNode.tagName).endsWith("tc")) {
+                        val cellRuns = mutableListOf<TextRun>()
+                        val paragraphs = getElementsByTagNameLocal(tcNode, "p")
+                        for ((pIdx, p) in paragraphs.withIndex()) {
+                            val items = collectParagraphItems(p)
+                            for (item in items) {
+                                when (item) {
+                                    is ParagraphItem.Text -> cellRuns.add(item.run)
+                                    is ParagraphItem.ImageRel -> {
+                                        val targetPath = rels[item.rId] ?: continue
+                                        val imgBytes = entries[targetPath]
+                                            ?: entries.entries.firstOrNull { it.key.equals(targetPath, ignoreCase = true) }?.value
+                                            ?: continue
+                                        ImageDownloader.decodeImageBlock(imgBytes, targetPath)
+                                            ?.let { trailingImages.add(it) }
+                                    }
+                                }
+                            }
+                            if (pIdx < paragraphs.lastIndex && cellRuns.isNotEmpty()) {
+                                cellRuns.add(TextRun("\n"))
+                            }
+                        }
+                        rowCells.add(cellRuns)
+                    }
+                    tcNode = tcNode.nextSibling
+                }
+                if (rowCells.isNotEmpty()) {
+                    allRows.add(rowCells)
+                }
+            }
+            trNode = trNode.nextSibling
+        }
+
+        val maxCols = allRows.maxOfOrNull { it.size } ?: 0
+        if (maxCols > 0 && allRows.isNotEmpty()) {
+            val headers = List(maxCols) { colIdx ->
+                (allRows.first().getOrNull(colIdx) ?: emptyList()).map { it.copy(bold = true) }
+            }
+            val dataRows = allRows.drop(1).map { r ->
+                List(maxCols) { colIdx -> r.getOrNull(colIdx) ?: emptyList() }
+            }
+            blocks.add(Block.TableBlock(headers = headers, rows = dataRows))
+        }
+        blocks.addAll(trailingImages)
     }
 
     /**

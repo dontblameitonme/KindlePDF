@@ -285,19 +285,55 @@ class EpubParser {
                         }
                     }
 
+                    "hr" -> {
+                        blocks.add(Block.HorizontalRule)
+                    }
+
                     "table" -> {
-                        // 简易表格支持：按行（tr）提取其中的文字与图片
-                        for (tr in getElementsByTagNameLocal(child, "tr")) {
-                            val items = collectInlineItems(tr)
-                            emitInlineItems(
-                                items = items,
-                                blocks = blocks,
-                                chapterDir = chapterDir,
-                                entries = entries,
-                                entriesLower = entriesLower,
-                                blockBuilder = { runs -> Block.Paragraph(runs) }
-                            )
+                        // 提取 HTML 表格为结构化 Block.TableBlock，同时保留单元格内的内嵌图片
+                        val trList = getElementsByTagNameLocal(child, "tr")
+                        val headers = mutableListOf<List<TextRun>>()
+                        val rows = mutableListOf<List<List<TextRun>>>()
+                        val tableImages = mutableListOf<Block.ImageBlock>()
+
+                        for ((rowIdx, tr) in trList.withIndex()) {
+                            val thCells = getDirectCells(tr, "th")
+                            val tdCells = getDirectCells(tr, "td")
+                            val isHeaderRow = thCells.isNotEmpty() && tdCells.isEmpty() && headers.isEmpty()
+                            val cellElements = if (thCells.isNotEmpty()) thCells else tdCells
+                            if (cellElements.isEmpty()) continue
+
+                            val rowRuns = cellElements.map { cellEl ->
+                                val items = collectInlineItems(cellEl, parentBold = isHeaderRow || rowIdx == 0 && thCells.isNotEmpty())
+                                val textRuns = mutableListOf<TextRun>()
+                                for (item in items) {
+                                    when (item) {
+                                        is InlineItem.Text -> textRuns.add(item.run)
+                                        is InlineItem.ImageNode -> {
+                                            extractImageBlock(item.element, chapterDir, entries, entriesLower)
+                                                ?.let { tableImages.add(it) }
+                                        }
+                                    }
+                                }
+                                trimTextRuns(textRuns)
+                            }
+
+                            if (isHeaderRow) {
+                                headers.addAll(rowRuns)
+                            } else {
+                                rows.add(rowRuns)
+                            }
                         }
+
+                        val maxCols = maxOf(headers.size, rows.maxOfOrNull { it.size } ?: 0)
+                        if (maxCols > 0 && (headers.isNotEmpty() || rows.isNotEmpty())) {
+                            val normHeaders = if (headers.isNotEmpty()) {
+                                List(maxCols) { headers.getOrNull(it) ?: emptyList() }
+                            } else emptyList()
+                            val normRows = rows.map { r -> List(maxCols) { r.getOrNull(it) ?: emptyList() } }
+                            blocks.add(Block.TableBlock(normHeaders, normRows))
+                        }
+                        blocks.addAll(tableImages)
                     }
 
                     "div", "section", "article", "main", "header", "footer", "figure", "aside", "center" -> {
@@ -352,6 +388,19 @@ class EpubParser {
             child = child.nextSibling
         }
         return false
+    }
+
+    /** 提取 `<tr>` 下的直接单元格子节点（`<th>` 或 `<td>`） */
+    private fun getDirectCells(tr: Element, cellTag: String): List<Element> {
+        val cells = mutableListOf<Element>()
+        var child: Node? = tr.firstChild
+        while (child != null) {
+            if (child is Element && (child.localName ?: child.tagName).lowercase() == cellTag) {
+                cells.add(child)
+            }
+            child = child.nextSibling
+        }
+        return cells
     }
 
     /** 表示内联流中的文字片段或内嵌图片元素 */
