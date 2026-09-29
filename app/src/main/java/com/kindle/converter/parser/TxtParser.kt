@@ -9,13 +9,29 @@ import java.nio.charset.CharsetDecoder
 
 class TxtParser {
 
+    /**
+     * 解析纯文本（TXT）文件为结构化段落列表。
+     *
+     * 修复说明（便于后续维护）：
+     * 1. 行尾换行符归一化顺序：
+     *    旧版在 `split(Regex("\n[ \t]*\n"))` 之后才执行 `.replace("\r\n", "\n")`，
+     *    导致 Windows 换行格式（`\r\n\r\n`）因中间夹有 `\r` 而无法匹配分段正则，整本书变成单一大段落。
+     *    现先统一将 `\r\n` 与 `\r` 替换为 `\n`，再按换行切分段落。
+     * 2. 兼容单换行与双换行分段，并清理段首全角空格（`\u3000`）：
+     *    中文 TXT 小说/文稿普遍采用单换行分段且段首常自带两个全角空格 `　　`；
+     *    剥离段首尾空白与全角空格后，统一交由排版引擎按用户设定的 `firstLineIndent`（默认 2em）控制首行缩进，
+     *    避免出现“排版缩进 2em + 原文全角空格 2em = 4em”的双重缩进问题。
+     */
     fun parse(bytes: ByteArray): Document {
-        val text = detectEncoding(bytes)
-        val blocks = text
-            .split(Regex("\n[ \t]*\n"))
-            .filter { it.isNotBlank() }
-            .map { para ->
-                val cleaned = para.trim().replace("\r\n", "\n").replace("\r", "\n")
+        val normalized = detectEncoding(bytes)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+
+        val blocks = normalized
+            .split(Regex("\n+"))
+            .map { line -> line.trim { it <= ' ' || it == '\u3000' } }
+            .filter { it.isNotEmpty() }
+            .map { cleaned ->
                 Block.Paragraph(listOf(TextRun(cleaned)))
             }
         return Document(blocks)

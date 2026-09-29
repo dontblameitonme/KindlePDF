@@ -280,8 +280,6 @@ class PdfParser {
         val out = mutableListOf<Block.ImageBlock>()
         try {
             val seen = HashSet<String>()
-            val pageW = page.mediaBox.width.toInt()
-            val pageH = page.mediaBox.height.toInt()
             val images = mutableListOf<PDImageXObject>()
             collectImages(page.resources, images, seen)
             for (img in images) {
@@ -289,8 +287,12 @@ class PdfParser {
                     val w = img.width
                     val h = img.height
                     if (w <= 0 || h <= 0) continue
-                    // 跳过"等同于整页尺寸"的背景图 / 大面积水印
-                    if (w >= pageW - 2 && h >= pageH - 2) continue
+                    // 修复说明：
+                    // 旧代码曾使用 `if (w >= pageW - 2 && h >= pageH - 2) continue` 试图过滤整页背景图，
+                    // 但混淆了物理单位：`img.width/height` 是位图像素（px，通常 800~2400px），
+                    // 而 `page.mediaBox.width/height` 是 PDF 点（pt，A4 仅 595x842pt）。
+                    // 直接数值比较会导致几乎所有高分辨率正常插图被误判为“全页背景”而丢弃。
+                    // 此处仅过滤 < 16x16 的装饰性碎图/追踪像素。
                     if (w < 16 || h < 16) continue
 
                     val bitmap = img.image ?: continue

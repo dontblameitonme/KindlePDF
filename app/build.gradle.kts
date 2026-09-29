@@ -38,8 +38,8 @@ android {
         applicationId = "com.kindle.converter"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     buildTypes {
@@ -55,11 +55,13 @@ android {
         }
     }
 
-    // Universal single APK that supports both 32-bit (armeabi-v7a) and
-    // 64-bit (arm64-v8a) devices. App has no native libs, so size is unchanged.
+    // 启用 ABI 分包，仅输出 arm64-v8a 架构的独立发布包（app-arm64-v8a-release.apk）
     splits {
         abi {
-            isEnable = false
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
         }
     }
 
