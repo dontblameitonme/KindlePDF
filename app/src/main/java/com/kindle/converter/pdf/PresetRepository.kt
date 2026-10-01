@@ -158,7 +158,7 @@ class PresetRepository(private val context: Context) {
             fontSize = o.optDouble("fontSize", 12.0).toFloat(),
             lineHeight = o.optDouble("lineHeight", 1.5).toFloat(),
             paragraphSpacing = o.optDouble("paragraphSpacing", 3.6).toFloat(),
-            firstLineIndent = o.optDouble("firstLineIndent", 24.0).toFloat(),
+            firstLineIndent = o.optDouble("firstLineIndent", 16.0).toFloat(),
             textAlignment = ta,
             forceAlign = o.optBoolean("forceAlign", true),
             verticalAlignment = va,

@@ -520,15 +520,29 @@ class Paginator {
         /** 非空时代表这是一个图片块，整个块只放这一个 ImageElement */
         val imageElement: LayoutElement.ImageElement? = null,
         /** 非空时代表这是一个结构化表格块，支持跨页自动重复表头与完整网格绘制 */
-        val tableLayout: TableLayoutData? = null
+        val tableLayout: TableLayoutData? = null,
+        /** 对应的原始 Document.blocks 索引（用于精确生成目录书签页码，绝不依赖全文文本搜索） */
+        val sourceBlockIndex: Int = -1
+    )
+
+    data class PaginateResult(
+        val pages: List<PageLayout>,
+        val blockPageMap: Map<Int, Int> = emptyMap()
     )
 
     fun paginate(
         blockLines: List<BlockLines>,
         params: TypesettingParams,
         lineHeight: Float
-    ): List<PageLayout> {
+    ): List<PageLayout> = paginateWithDetails(blockLines, params, lineHeight).pages
+
+    fun paginateWithDetails(
+        blockLines: List<BlockLines>,
+        params: TypesettingParams,
+        lineHeight: Float
+    ): PaginateResult {
         val pages = mutableListOf<PageLayout>()
+        val blockPageMap = mutableMapOf<Int, Int>()
         var currentY = params.marginTop
         var currentElements = mutableListOf<LayoutElement>()
         val maxBottom = params.marginTop + params.availableHeight
@@ -547,6 +561,9 @@ class Paginator {
                 val ruleBlockH = lineHeight * 0.7f
                 if (currentY + ruleBlockH > maxBottom && currentElements.isNotEmpty()) {
                     newPage()
+                }
+                if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                    blockPageMap[entry.sourceBlockIndex] = pages.size
                 }
                 val ruleY = currentY + ruleBlockH * 0.5f
                 currentElements.add(
@@ -577,6 +594,9 @@ class Paginator {
                 val minStartH = (tbl.headerRow?.height ?: 0f) + firstRowH
                 if (currentY + minStartH > maxBottom && currentElements.isNotEmpty()) {
                     newPage()
+                }
+                if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                    blockPageMap[entry.sourceBlockIndex] = pages.size
                 }
 
                 fun emitTableSlice(sliceRows: List<TableRowLayout>, startY: Float): Float {
@@ -719,6 +739,9 @@ class Paginator {
 
                 if (params.imageWrapMode == ImageWrapMode.BEHIND_TEXT) {
                     // 衬于文字下方：图片填满整页，固定 y=0，添加在当前页最前（绘制顺序 = 在文字之前）
+                    if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                        blockPageMap[entry.sourceBlockIndex] = pages.size
+                    }
                     val placedImg = img.copy(x = 0f, y = 0f)
                     currentElements.add(0, placedImg)
                     continue
@@ -727,6 +750,9 @@ class Paginator {
                 // 上下型（默认）：独占一行，按图片 height 占位。
                 if (currentY + img.height > maxBottom && currentElements.isNotEmpty()) {
                     newPage()
+                }
+                if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                    blockPageMap[entry.sourceBlockIndex] = pages.size
                 }
                 val maxFitH = (maxBottom - currentY).coerceAtLeast(1f)
                 val finalW: Float
@@ -967,6 +993,10 @@ class Paginator {
                     positioned
                 }
 
+                if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                    blockPageMap[entry.sourceBlockIndex] = pages.size
+                }
+
                 currentElements.add(
                     LayoutElement.TextLine(
                         segments = segments,
@@ -999,7 +1029,7 @@ class Paginator {
         if (params.verticalAlignment != VerticalAlignment.TOP) {
             applyVerticalAlignment(pages, params, lineHeight)
         }
-        return pages
+        return PaginateResult(pages, blockPageMap)
     }
 
     /**
@@ -1087,7 +1117,15 @@ class TypesettingEngine(
     private val lineBreaker: LineBreaker,
     private val paginator: Paginator
 ) {
-    fun typeset(document: Document, params: TypesettingParams): List<PageLayout> {
+    data class TypesetResult(
+        val pages: List<PageLayout>,
+        val blockPageMap: Map<Int, Int> = emptyMap()
+    )
+
+    fun typeset(document: Document, params: TypesettingParams): List<PageLayout> =
+        typesetWithDetails(document, params).pages
+
+    fun typesetWithDetails(document: Document, params: TypesettingParams): TypesetResult {
         val availableWidth = params.availableWidth
         val lineHeight = params.lineHeightInPoints
         val blockLinesList = mutableListOf<Paginator.BlockLines>()
@@ -1101,14 +1139,14 @@ class TypesettingEngine(
             TextAlignment.CENTER, TextAlignment.RIGHT -> 0f
         }
 
-        for (block in document.blocks) {
+        for ((blockIndex, block) in document.blocks.withIndex()) {
             when (block) {
                 is Block.Paragraph -> {
                     val lines = lineBreaker.breakLines(
                         block.runs, availableWidth, params.fontSize,
                         paragraphFirstLineIndent
                     )
-                    blockLinesList.add(Paginator.BlockLines(lines))
+                    blockLinesList.add(Paginator.BlockLines(lines, sourceBlockIndex = blockIndex))
                 }
 
                 is Block.Heading -> {
@@ -1122,14 +1160,20 @@ class TypesettingEngine(
                         headingRuns, availableWidth, headingFontSize,
                         firstLineIndent = 0f
                     )
-                    blockLinesList.add(Paginator.BlockLines(lines, isHeading = true, headingLevel = block.level))
+                    blockLinesList.add(
+                        Paginator.BlockLines(
+                            lines,
+                            isHeading = true,
+                            headingLevel = block.level,
+                            sourceBlockIndex = blockIndex
+                        )
+                    )
                 }
 
                 is Block.ListItem -> {
                     // 多级列表与悬挂缩进（Hanging Indent）：
                     // 1) 不同层级使用区分明显的列表符号（0级 •，1级 ◦，2级及以上 ▪），并经字体字形可用性校验；
-                    // 2) 正文左边界统一对齐在 bodyLeftIndent，首行列表符号悬挂在 bodyLeftIndent 左侧，
-                    //    折行后的第 2、3 行与首行正文文字严格左对齐，不再退到符号下方。
+                    // 2) 紧凑化缩进（顶层 0 缩进，子级每层 0.85em），彻底释放 Kindle 窄屏版心横向空间，杜绝单字孤立折行与大片无效留白。
                     val bulletChar = when (block.level) {
                         0 -> measurer.resolveSupportedChar('•')
                         1 -> measurer.resolveSupportedChar('◦')
@@ -1137,9 +1181,10 @@ class TypesettingEngine(
                     }
                     val prefix = if (block.ordered) "${block.orderIndex}. " else "$bulletChar "
                     val prefixWidth = measurer.measureText(prefix, params.fontSize, bold = block.ordered)
-                    val baseIndent = (block.level + 1) * params.fontSize * 1.15f
-                    val bodyLeftIndent = (baseIndent + prefixWidth).coerceAtMost(availableWidth * 0.45f)
-                    val prefixX = (bodyLeftIndent - prefixWidth).coerceAtLeast(0f)
+                    val stepIndent = params.fontSize * 0.85f
+                    val baseIndent = block.level * stepIndent
+                    val bodyLeftIndent = (baseIndent + prefixWidth.coerceAtLeast(params.fontSize * 0.85f)).coerceAtMost(availableWidth * 0.40f)
+                    val prefixX = baseIndent
 
                     val bodyLines = lineBreaker.breakLines(
                         block.runs, availableWidth, params.fontSize,
@@ -1173,34 +1218,34 @@ class TypesettingEngine(
                             )
                         )
                     }
-                    blockLinesList.add(Paginator.BlockLines(lines, isListItem = true))
+                    blockLinesList.add(Paginator.BlockLines(lines, isListItem = true, sourceBlockIndex = blockIndex))
                 }
 
                 is Block.QuoteBlock -> {
-                    // 引用块：左侧留出 1.35em 缩进供 Paginator 绘制左侧竖线，取消首行额外 2em 缩进以适配多段/列表型 Callout
-                    val indent = params.fontSize * 1.35f
+                    // 引用块：左侧留出 1.0em 缩进供 Paginator 绘制左侧竖线，给正文留出充裕版心空间
+                    val indent = params.fontSize * 1.0f
                     val lines = lineBreaker.breakLines(
                         block.runs, availableWidth, params.fontSize,
                         firstLineIndent = 0f,
                         leftIndent = indent
                     )
-                    blockLinesList.add(Paginator.BlockLines(lines, isQuoteBlock = true))
+                    blockLinesList.add(Paginator.BlockLines(lines, isQuoteBlock = true, sourceBlockIndex = blockIndex))
                 }
 
                 is Block.CodeBlock -> {
                     val codeBlockLines = layoutCodeBlock(block, availableWidth, params.fontSize)
-                    blockLinesList.add(codeBlockLines)
+                    blockLinesList.add(codeBlockLines.copy(sourceBlockIndex = blockIndex))
                 }
 
                 is Block.TableBlock -> {
                     val tableLayout = layoutTableBlock(block, availableWidth, params)
                     if (tableLayout != null) {
-                        blockLinesList.add(Paginator.BlockLines(emptyList(), tableLayout = tableLayout))
+                        blockLinesList.add(Paginator.BlockLines(emptyList(), tableLayout = tableLayout, sourceBlockIndex = blockIndex))
                     }
                 }
 
                 is Block.HorizontalRule -> {
-                    blockLinesList.add(Paginator.BlockLines(emptyList(), isHorizontalRule = true))
+                    blockLinesList.add(Paginator.BlockLines(emptyList(), isHorizontalRule = true, sourceBlockIndex = blockIndex))
                 }
 
                 is Block.ImageBlock -> {
@@ -1223,12 +1268,13 @@ class TypesettingEngine(
                         width = drawW,
                         height = drawH
                     )
-                    blockLinesList.add(Paginator.BlockLines(emptyList(), imageElement = imgEl))
+                    blockLinesList.add(Paginator.BlockLines(emptyList(), imageElement = imgEl, sourceBlockIndex = blockIndex))
                 }
             }
         }
 
-        return paginator.paginate(blockLinesList, params, lineHeight)
+        val paginateResult = paginator.paginateWithDetails(blockLinesList, params, lineHeight)
+        return TypesetResult(paginateResult.pages, paginateResult.blockPageMap)
     }
 
     /**

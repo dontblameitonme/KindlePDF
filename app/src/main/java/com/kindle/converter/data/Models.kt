@@ -143,7 +143,7 @@ data class TypesettingParams(
     val fontSize: Float = 12f,
     val lineHeight: Float = 1.5f,
     val paragraphSpacing: Float = 3.6f,
-    val firstLineIndent: Float = 24f,
+    val firstLineIndent: Float = 16f,
     val textAlignment: TextAlignment = TextAlignment.LEFT,
     /**
      * 强制对齐（默认开）。开启后在「左对齐 / 两端对齐」下，把每个段落除末行以外的所有行

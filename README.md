@@ -94,8 +94,16 @@ app/src/main/java/com/kindle/converter/
   1. **窄屏自适应重排**：针对 6 英寸 Kindle 版心（目标 44 半角列，对应 `9.36pt` 大字号），自动剥离整块公共前导缩进，将宽幅单列闭合方框（`┌───┐...└───┘`）、双栏并列树状表、横式双分式方程、并列双框对照图重构为 44 列宽度，在框内按树枝前缀与单词/单位边界智能折行并重绘对齐右边框 `│` 与中心连接符 `▲`/`│`/`┴`；对真二维图形执行无损垂直冗余列剔除（`compact2DRows`），并对圆角框符号 `╭╮╰╯` 自动降级为全角等宽的 `┌┐└┘`。
   2. **网格锁定与宽拉丁字形防重叠**：框线与箭头符号严格锁定在 `padX + col * halfEm` 网格坐标，确保竖线像素级垂直对齐；正文字符采用 `maxOf(gridX, minNextX)` 动态防碰撞，避免比例字体中宽大写字母（如 `M`、`W`、`T`）超出 `0.5 em` 时与右侧字符发生重叠。
   3. **闭合子方框防孤立断页**：在 `Paginator.paginate` 中检测框线图内的闭合子方框（`┌...┐` 至 `└...┘` 及紧邻连接线），若当前页剩余高度不足以容纳整个子方框则整体推至下一页。
-- **单字重字体的 PDF 伪粗体（`PdfGenerator.drawPage`）**：
-  当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合 `(0.042f * fontSize).coerceAtLeast(0.32f)` 线宽实现饱满的描边加粗，并在绘制后立即恢复 `RenderingMode.FILL`。
+- **单字重字体的 PDF 伪粗体与笔画防糊优化（`PdfGenerator.drawPage`）**：
+  当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合描边加粗。经墨水屏实测调优，将原先过粗的 `0.042 * fontSize` 优化为 `(seg.fontSize * 0.020f).coerceIn(0.18f, 0.30f)`：既在 300 PPI 墨水屏上保持对比鲜明，又确保笔画密集的复杂汉字（如「篇」「糖」「淀」）字腔内白清晰通透、彻底杜绝糊墨堵笔画现象；并在绘制后立即恢复 `RenderingMode.FILL`。
+- **前言目录智能过滤与确定性块级书签映射（`MarkdownParser` / `TypesettingEngine` / `ConverterViewModel`）**：
+  1. **前言完整目录过滤**：在 Markdown 文档中，书首常包含「全书完整目录（全景导图）」等概览章节。`MarkdownParser` 识别该目录区域（`## 全书完整目录...`），保留正文排版打印块的同时将其内部的二级/三级标题从全局大纲列表（`doc.toc`）中排除，避免与后续正文同名标题冲突。
+  2. **确定性块到页码映射（`blockPageMap`）**：彻底淘汰早期版本按“标题文本前 10 字”从第 0 页向前全文子串搜索（`pages.indexOfFirst { text.contains(...) }`）的模糊逻辑（该机制在遇到前言导读目录时，会导致正文所有章节全部跳入前言第 2~4 页）。现由 `Paginator` 在分页摆放每块第 1 个图元/行时，直接记录物理块索引与实际落入页码的映射表 `blockPageMap[entry.blockIndex]`。书签生成器直接依据块索引精准锚定目标页，配合标题与层级去重，实现 100% 精确的 PDF 目录大纲点击跳转。
+- **窄屏列表、引用块与首行缩进紧凑化排版（`TypesettingEngine` & `Models.kt`）**：
+  针对 6 英寸 Kindle（可用宽度约 `222pt`）：
+  1. **紧凑列表缩进**：0 级列表符号紧贴左边距（`prefixX = 0f`），正文仅悬挂 `0.85em`（约 10.8pt）；1 级子列表缩进优化为 `21pt`（原先为 37.6pt，节省近 `17pt` 横向宽度），大幅消除左侧过大空白，杜绝“孤字成行”或过早折行。
+  2. **引用块（Callout）**：左侧竖线边距与内边距缩减为 `1.0em`，兼顾阅读呼吸感与空间利用率。
+  3. **首行缩进**：默认缩进值由 `24pt` 微调为 `16pt`，减少空隙浪费。
 
 ### 3. 图片提取与分页管线（`ImageDownloader` / `EpubParser` / `DocxParser` / `PdfParser` / `Paginator`）
 - **位图真实尺寸探测（`ImageDownloader.decodeDimensions`）**：

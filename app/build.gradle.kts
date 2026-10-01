@@ -84,6 +84,16 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
+    sourceSets {
+        getByName("test") {
+            resources.srcDir("build/intermediates/assets/release/mergeReleaseAssets")
+        }
+    }
 }
 
 dependencies {
@@ -110,5 +120,6 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

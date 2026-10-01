@@ -491,9 +491,10 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
 
                     val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
                     val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
-                    val pages = engine.typeset(document, params)
+                    val typesetResult = engine.typesetWithDetails(document, params)
+                    val pages = typesetResult.pages
 
-                    val bookmarks = createBookmarks(document, pages, params)
+                    val bookmarks = createBookmarks(document, pages, typesetResult.blockPageMap)
 
                     // 先生成到缓存临时文件
                     val tempFile = File(app.cacheDir, "out_${System.currentTimeMillis()}_$index.pdf")
@@ -612,23 +613,33 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
     private fun createBookmarks(
         document: Document,
         pages: List<PageLayout>,
-        params: TypesettingParams
+        blockPageMap: Map<Int, Int>
     ): List<PdfGenerator.Bookmark> {
         if (document.toc.isEmpty()) return emptyList()
 
         val bookmarks = mutableListOf<PdfGenerator.Bookmark>()
+        val seenTitleAndLevel = mutableSetOf<String>()
+
         for (entry in document.toc) {
-            val pageIndex = pages.indexOfFirst { page ->
-                page.elements.any { el ->
-                    val text = when (el) {
-                        is com.kindle.converter.data.LayoutElement.TextLine ->
-                            el.segments.joinToString("") { it.text }
-                        else -> ""
+            val key = "${entry.level}:${entry.title.trim()}"
+            if (key in seenTitleAndLevel) continue
+
+            val pageIndex = blockPageMap[entry.blockIndex] ?: run {
+                // 仅作为极端边缘情况的兜底：若 blockIndex 丢失，才在全书中寻找包含标题的页面
+                pages.indexOfFirst { page ->
+                    page.elements.any { el ->
+                        val text = when (el) {
+                            is com.kindle.converter.data.LayoutElement.TextLine ->
+                                el.segments.joinToString("") { it.text }
+                            else -> ""
+                        }
+                        text.contains(entry.title.take(10))
                     }
-                    text.contains(entry.title.take(10))
                 }
             }
-            if (pageIndex >= 0) {
+
+            if (pageIndex in pages.indices) {
+                seenTitleAndLevel.add(key)
                 bookmarks.add(PdfGenerator.Bookmark(entry.title, entry.level, pageIndex))
             }
         }

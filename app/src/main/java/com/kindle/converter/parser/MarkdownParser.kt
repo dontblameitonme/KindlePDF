@@ -86,11 +86,12 @@ class MarkdownParser {
         val normalized = markdown.replace("\r\n", "\n").replace("\r", "\n")
         val segments = splitSegmentsWithTables(normalized)
 
+        var frontMatterTocLevel = -1
         for (seg in segments) {
             when (seg) {
                 is MdSegment.MarkdownText -> {
                     val mdDoc = parser.parse(seg.text)
-                    parseBlockChildren(mdDoc, blocks, toc, imageResolver)
+                    frontMatterTocLevel = parseBlockChildren(mdDoc, blocks, toc, imageResolver, frontMatterTocLevel)
                 }
                 is MdSegment.PipeTable -> {
                     val tableBlock = buildTableBlock(seg.headerLine, seg.bodyLines)
@@ -394,12 +395,19 @@ class MarkdownParser {
 
     // ---- 块级 AST 递归遍历 ----
 
+    private val frontMatterTocRegex = Regex(
+        """^(?:全书)?(?:完整)?(?:导读)?(?:目录|Contents|TABLE OF CONTENTS|Navigation|导航)(?:[（(].*[）)])?[:：]?\s*$""",
+        RegexOption.IGNORE_CASE
+    )
+
     private suspend fun parseBlockChildren(
         parent: Node,
         blocks: MutableList<Block>,
         toc: MutableList<TocEntry>,
-        imageResolver: suspend (String) -> DownloadedImage?
-    ) {
+        imageResolver: suspend (String) -> DownloadedImage?,
+        initialFrontMatterTocLevel: Int = -1
+    ): Int {
+        var frontMatterTocLevel = initialFrontMatterTocLevel
         var child = parent.firstChild
         while (child != null) {
             when (child) {
@@ -408,8 +416,22 @@ class MarkdownParser {
                     val runs = collectTextRuns(inlines)
                     if (runs.isNotEmpty()) {
                         blocks.add(Block.Heading(child.level, runs))
-                        val title = runs.joinToString("") { it.text }
-                        toc.add(TocEntry(title, child.level, blocks.lastIndex))
+                        val title = runs.joinToString("") { it.text }.trim()
+                        if (frontMatterTocRegex.matches(title)) {
+                            frontMatterTocLevel = child.level
+                            toc.add(TocEntry(title, child.level, blocks.lastIndex))
+                        } else if (frontMatterTocLevel != -1) {
+                            if (child.level <= frontMatterTocLevel) {
+                                // 遇到了层级小于等于前置目录块的新章节标题，说明前置印刷目录已结束，恢复正常记录
+                                frontMatterTocLevel = -1
+                                toc.add(TocEntry(title, child.level, blocks.lastIndex))
+                            } else {
+                                // 仍处于前置目录块内部（例如在 "## 全书完整目录" 下面的 "### 第一篇..."），
+                                // 仅作为印刷版面的层级小标，不加入电子大纲书签，避免与后方正文真正的第一篇冲突
+                            }
+                        } else {
+                            toc.add(TocEntry(title, child.level, blocks.lastIndex))
+                        }
                     }
                 }
 
@@ -454,11 +476,13 @@ class MarkdownParser {
                 }
 
                 is ThematicBreak -> {
+                    frontMatterTocLevel = -1
                     blocks.add(Block.HorizontalRule)
                 }
             }
             child = child.next
         }
+        return frontMatterTocLevel
     }
 
     /**
