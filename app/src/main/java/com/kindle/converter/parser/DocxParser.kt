@@ -184,6 +184,7 @@ class DocxParser {
                             for (item in items) {
                                 when (item) {
                                     is ParagraphItem.Text -> cellRuns.add(item.run)
+                                    is ParagraphItem.PageBreak -> Unit
                                     is ParagraphItem.ImageRel -> {
                                         val targetPath = rels[item.rId] ?: continue
                                         val imgBytes = entries[targetPath]
@@ -228,6 +229,7 @@ class DocxParser {
     private sealed class ParagraphItem {
         data class Text(val run: TextRun) : ParagraphItem()
         data class ImageRel(val rId: String) : ParagraphItem()
+        object PageBreak : ParagraphItem()
     }
 
     /**
@@ -281,6 +283,10 @@ class DocxParser {
         for (item in items) {
             when (item) {
                 is ParagraphItem.Text -> currentRuns.add(item.run)
+                is ParagraphItem.PageBreak -> {
+                    flushTextRuns()
+                    result.add(Block.PageBreak)
+                }
                 is ParagraphItem.ImageRel -> {
                     flushTextRuns()
                     val targetPath = rels[item.rId] ?: continue
@@ -348,7 +354,16 @@ class DocxParser {
                 when (child.localName ?: child.tagName) {
                     "t", "w:t" -> text.append(child.textContent)
                     "tab", "w:tab" -> text.append('\t')
-                    "br", "w:br", "cr", "w:cr" -> text.append('\n')
+                    "br", "w:br" -> {
+                        val brType = (child.getAttribute("w:type").ifEmpty { child.getAttribute("type") }).lowercase()
+                        if (brType == "page") {
+                            flushText()
+                            out.add(ParagraphItem.PageBreak)
+                        } else {
+                            text.append('\n')
+                        }
+                    }
+                    "cr", "w:cr" -> text.append('\n')
                     "drawing", "w:drawing", "pict", "w:pict", "object", "w:object" -> {
                         flushText()
                         for (rId in extractImageRelIds(child)) {

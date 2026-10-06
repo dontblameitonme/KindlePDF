@@ -270,7 +270,7 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                 ?: PDDocumentOutline().also { document.documentCatalog.documentOutline = it }
 
             val stack = ArrayDeque<Pair<Int, PDOutlineNode>>()
-            stack.addLast(0 to rootOutline)
+            stack.addLast(-1 to rootOutline)
 
             for (bookmark in bookmarks) {
                 // Pop stack until we find a parent with lower level

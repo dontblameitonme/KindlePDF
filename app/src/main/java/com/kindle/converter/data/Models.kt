@@ -42,6 +42,10 @@ sealed class Block {
      * 水平分隔线块（对应 Markdown `---` / `***` 或 HTML `<hr>`）。
      */
     object HorizontalRule : Block()
+    /**
+     * 显式分页符块（由 EPUB 章节文档边界、DOCX 分页符或显式指令生成）。
+     */
+    object PageBreak : Block()
 }
 
 data class TextRun(

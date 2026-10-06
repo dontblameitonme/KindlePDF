@@ -516,6 +516,7 @@ class Paginator {
         val isQuoteBlock: Boolean = false,
         val isCodeBlock: Boolean = false,
         val isHorizontalRule: Boolean = false,
+        val isPageBreak: Boolean = false,
         val customLineHeight: Float? = null,
         /** 非空时代表这是一个图片块，整个块只放这一个 ImageElement */
         val imageElement: LayoutElement.ImageElement? = null,
@@ -556,6 +557,17 @@ class Paginator {
         }
 
         for (entry in blockLines) {
+            // ----- 0) 显式分页符 (PageBreak) -----
+            if (entry.isPageBreak) {
+                if (currentElements.isNotEmpty()) {
+                    newPage()
+                }
+                if (entry.sourceBlockIndex >= 0 && entry.sourceBlockIndex !in blockPageMap) {
+                    blockPageMap[entry.sourceBlockIndex] = pages.size
+                }
+                continue
+            }
+
             // ----- 1) 水平分割线 (HorizontalRule) -----
             if (entry.isHorizontalRule) {
                 val ruleBlockH = lineHeight * 0.7f
@@ -1246,6 +1258,10 @@ class TypesettingEngine(
 
                 is Block.HorizontalRule -> {
                     blockLinesList.add(Paginator.BlockLines(emptyList(), isHorizontalRule = true, sourceBlockIndex = blockIndex))
+                }
+
+                is Block.PageBreak -> {
+                    blockLinesList.add(Paginator.BlockLines(emptyList(), isPageBreak = true, sourceBlockIndex = blockIndex))
                 }
 
                 is Block.ImageBlock -> {

@@ -96,11 +96,11 @@ class HtmlParser {
                     flush(0)
                 }
 
-                lower == "<br>" || lower.startsWith("<br ") -> {
+                lower == "<br>" || lower == "<br/>" || lower.startsWith("<br ") || lower.startsWith("<br/") -> {
                     flush(0)
                 }
 
-                lower == "<hr>" || lower.startsWith("<hr ") -> {
+                lower == "<hr>" || lower == "<hr/>" || lower.startsWith("<hr ") || lower.startsWith("<hr/") -> {
                     flush(0)
                     blocks.add(Block.HorizontalRule)
                 }

@@ -619,31 +619,46 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
 
         val bookmarks = mutableListOf<PdfGenerator.Bookmark>()
         val seenTitleAndLevel = mutableSetOf<String>()
+        var lastFoundPageIndex = 0
 
         for (entry in document.toc) {
             val key = "${entry.level}:${entry.title.trim()}"
             if (key in seenTitleAndLevel) continue
 
             val pageIndex = blockPageMap[entry.blockIndex] ?: run {
-                // 仅作为极端边缘情况的兜底：若 blockIndex 丢失，才在全书中寻找包含标题的页面
-                pages.indexOfFirst { page ->
-                    page.elements.any { el ->
-                        val text = when (el) {
-                            is com.kindle.converter.data.LayoutElement.TextLine ->
-                                el.segments.joinToString("") { it.text }
-                            else -> ""
-                        }
-                        text.contains(entry.title.take(10))
-                    }
+                // 仅作为极端边缘情况的兜底（如异常格式中缺失 blockIndex）：
+                // 1) 归一化文本（滤除标点与空格，防止 "序 言" 与 "序言" 不匹配）；
+                val normTarget = entry.title.filter { it.isLetterOrDigit() }.take(12)
+                if (normTarget.isEmpty()) return@run -1
+
+                // 2) 优先从 lastFoundPageIndex 向后搜索（章节顺序单调递增），避免倒退跳回书首目录页
+                val forwardMatch = (lastFoundPageIndex until pages.size).firstOrNull { pIdx ->
+                    pageMatchesTitle(pages[pIdx], normTarget)
                 }
+                forwardMatch ?: (0 until lastFoundPageIndex).firstOrNull { pIdx ->
+                    pageMatchesTitle(pages[pIdx], normTarget)
+                } ?: -1
             }
 
             if (pageIndex in pages.indices) {
                 seenTitleAndLevel.add(key)
+                lastFoundPageIndex = maxOf(lastFoundPageIndex, pageIndex)
                 bookmarks.add(PdfGenerator.Bookmark(entry.title, entry.level, pageIndex))
             }
         }
         return bookmarks
+    }
+
+    private fun pageMatchesTitle(page: PageLayout, normTarget: String): Boolean {
+        return page.elements.any { el ->
+            when (el) {
+                is com.kindle.converter.data.LayoutElement.TextLine -> {
+                    val lineNorm = el.segments.joinToString("") { it.text }.filter { it.isLetterOrDigit() }
+                    lineNorm.contains(normTarget)
+                }
+                else -> false
+            }
+        }
     }
 
     private fun readUriBytes(uri: Uri): ByteArray {

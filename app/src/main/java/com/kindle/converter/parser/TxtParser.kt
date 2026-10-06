@@ -3,14 +3,20 @@ package com.kindle.converter.parser
 import com.kindle.converter.data.Block
 import com.kindle.converter.data.Document
 import com.kindle.converter.data.TextRun
+import com.kindle.converter.data.TocEntry
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.CharsetDecoder
 
 class TxtParser {
 
+    private val chapterRegex = Regex(
+        """^(?:第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回卷节篇部集话]|Chapter\s+\d+|[序前]言|引子|尾声|后记|番外\S*)\s*.*$""",
+        RegexOption.IGNORE_CASE
+    )
+
     /**
-     * 解析纯文本（TXT）文件为结构化段落列表。
+     * 解析纯文本（TXT）文件为结构化段落与章节大纲列表。
      *
      * 修复说明（便于后续维护）：
      * 1. 行尾换行符归一化顺序：
@@ -21,20 +27,32 @@ class TxtParser {
      *    中文 TXT 小说/文稿普遍采用单换行分段且段首常自带两个全角空格 `　　`；
      *    剥离段首尾空白与全角空格后，统一交由排版引擎按用户设定的 `firstLineIndent`（默认 2em）控制首行缩进，
      *    避免出现“排版缩进 2em + 原文全角空格 2em = 4em”的双重缩进问题。
+     * 3. 智能章节标题探测（chapterRegex）与目录大纲生成：
+     *    自动识别「第 X 章/回/卷/节/篇」「Chapter N」「序言」「引子」「尾声」「后记」等常见章节名，
+     *    生成 Block.Heading 并收集进入 Document.toc，让 TXT 电子书同样具备大号标题排版与 PDF 大纲书签跳转能力。
      */
     fun parse(bytes: ByteArray): Document {
         val normalized = detectEncoding(bytes)
             .replace("\r\n", "\n")
             .replace("\r", "\n")
 
-        val blocks = normalized
+        val rawLines = normalized
             .split(Regex("\n+"))
             .map { line -> line.trim { it <= ' ' || it == '\u3000' } }
             .filter { it.isNotEmpty() }
-            .map { cleaned ->
-                Block.Paragraph(listOf(TextRun(cleaned)))
+
+        val blocks = mutableListOf<Block>()
+        val toc = mutableListOf<TocEntry>()
+
+        for (cleaned in rawLines) {
+            if (cleaned.length <= 40 && chapterRegex.matches(cleaned)) {
+                blocks.add(Block.Heading(1, listOf(TextRun(cleaned, bold = true))))
+                toc.add(TocEntry(cleaned, 1, blocks.lastIndex))
+            } else {
+                blocks.add(Block.Paragraph(listOf(TextRun(cleaned))))
             }
-        return Document(blocks)
+        }
+        return Document(blocks, toc)
     }
 
     /**

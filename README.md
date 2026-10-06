@@ -96,9 +96,19 @@ app/src/main/java/com/kindle/converter/
   3. **闭合子方框防孤立断页**：在 `Paginator.paginate` 中检测框线图内的闭合子方框（`┌...┐` 至 `└...┘` 及紧邻连接线），若当前页剩余高度不足以容纳整个子方框则整体推至下一页。
 - **单字重字体的 PDF 伪粗体与笔画防糊优化（`PdfGenerator.drawPage`）**：
   当 `seg.bold == true` 且 `boldFont === regularFont` 时，通过 `contentStream.setRenderingMode(RenderingMode.FILL_STROKE)` 配合描边加粗。经墨水屏实测调优，将原先过粗的 `0.042 * fontSize` 优化为 `(seg.fontSize * 0.020f).coerceIn(0.18f, 0.30f)`：既在 300 PPI 墨水屏上保持对比鲜明，又确保笔画密集的复杂汉字（如「篇」「糖」「淀」）字腔内白清晰通透、彻底杜绝糊墨堵笔画现象；并在绘制后立即恢复 `RenderingMode.FILL`。
-- **前言目录智能过滤与确定性块级书签映射（`MarkdownParser` / `TypesettingEngine` / `ConverterViewModel`）**：
-  1. **前言完整目录过滤**：在 Markdown 文档中，书首常包含「全书完整目录（全景导图）」等概览章节。`MarkdownParser` 识别该目录区域（`## 全书完整目录...`），保留正文排版打印块的同时将其内部的二级/三级标题从全局大纲列表（`doc.toc`）中排除，避免与后续正文同名标题冲突。
-  2. **确定性块到页码映射（`blockPageMap`）**：彻底淘汰早期版本按“标题文本前 10 字”从第 0 页向前全文子串搜索（`pages.indexOfFirst { text.contains(...) }`）的模糊逻辑（该机制在遇到前言导读目录时，会导致正文所有章节全部跳入前言第 2~4 页）。现由 `Paginator` 在分页摆放每块第 1 个图元/行时，直接记录物理块索引与实际落入页码的映射表 `blockPageMap[entry.blockIndex]`。书签生成器直接依据块索引精准锚定目标页，配合标题与层级去重，实现 100% 精确的 PDF 目录大纲点击跳转。
+- **确定性书签映射与全格式目录大纲增强（v1.2.0 新增）**：
+  1. **EPUB 规范级目录与锚点精准消解（`EpubParser`）**：
+     - 解析 EPUB 2 NCX（`<content src="..."/>`）与 EPUB 3 NAV（`<a href="...">`）中的相对路径与锚点 `#id`；
+     - 递归收集所有 HTML 元素的 `id` 属性与 `<a name="...">` 锚点，构建 `anchorBlockMap["path#id"]` 与章节首块映射表 `fileStartBlockMap`；
+     - 每条目录项严格且唯一地绑定到正文物理块索引 `blockIndex`。彻底根治此前因未绑定块索引导致全书书签在模糊搜索中被卷入书首 HTML 目录（如《知乎日报》全书书签锁定前 1~7 页）或书末印刷目录（如《显微镜下的大明》所有卷名锁定第 1488 页）的顽疾；
+     - 在 EPUB Spine 章节项之间与 DOCX `<w:br w:type="page"/>` 处插入原生 `Block.PageBreak`，保证章节另起新页，杜绝短小标题或前言与正文挤在同一页。
+  2. **TXT 经典章节智能探测（`TxtParser`）**：
+     - 自动检测并提取 `第[一二三四五六七八九十百千万\d]+[章节回卷折篇部集]`、`Chapter \d+`、`序言`、`前言`、`引子`、`后记`、`尾声`、`附录` 等段落为 `Block.Heading`，并自动构建多级大纲树。
+  3. **PDF 重排目录大纲无缝继承（`PdfParser`）**：
+     - 递归遍历原始 PDF 的 `documentOutline`，精确获取书签标题与层级，与提取出的正文文本行完成对齐与继承，确保 PDF 重新排版后完整保留原书多级目录树。
+  4. **书签兜底单调递增与文字清洗（`ConverterViewModel.createBookmarks`）**：
+     - 针对无块索引的极端情况，书签搜索强制从 `lastFoundPageIndex` 向后单调递增扫描，杜绝逆向跳回书首目录页；
+     - 匹配时自动过滤标点与空白符，完美兼容正文中带空格的标题排版（如 `序  言` 自动匹配 `序言`）。
 - **窄屏列表、引用块与首行缩进紧凑化排版（`TypesettingEngine` & `Models.kt`）**：
   针对 6 英寸 Kindle（可用宽度约 `222pt`）：
   1. **紧凑列表缩进**：0 级列表符号紧贴左边距（`prefixX = 0f`），正文仅悬挂 `0.85em`（约 10.8pt）；1 级子列表缩进优化为 `21pt`（原先为 37.6pt，节省近 `17pt` 横向宽度），大幅消除左侧过大空白，杜绝“孤字成行”或过早折行。

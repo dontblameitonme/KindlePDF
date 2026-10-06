@@ -14,6 +14,7 @@ import com.tom_roush.pdfbox.pdmodel.PDResources
 import com.tom_roush.pdfbox.pdmodel.graphics.PDXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.form.PDFormXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
+import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.text.TextPosition
 import java.io.ByteArrayOutputStream
@@ -57,10 +58,12 @@ class PdfParser {
             val pageCount = doc.pages.count
             val hideImages = ctx.imageWrapMode == ImageWrapMode.HIDE_IMAGES
             var previousFirstLine: String? = null  // 跨页追踪首行，识别重复页眉
+            val pageToFirstBlockMap = mutableMapOf<Int, Int>()
 
             for (i in 0 until pageCount) {
                 val page = doc.pages[i]
                 val pageHeight = page.mediaBox.height.toFloat()
+                pageToFirstBlockMap[i] = blocks.size
 
                 // 1. 行级抽文本 + 清理页眉页脚
                 val rawLines = extractPageLines(doc, i)
@@ -85,6 +88,30 @@ class PdfParser {
                     val images = extractImagesAsJpeg(page)
                     blocks.addAll(images)
                 }
+            }
+
+            // 3. 提取并保留原始 PDF 的大纲目录书签结构
+            val outline = doc.documentCatalog.documentOutline
+            if (outline != null) {
+                fun traverseOutline(node: PDOutlineNode, depth: Int) {
+                    var current = node.firstChild
+                    while (current != null) {
+                        val itemTitle = current.title?.trim()
+                        val destPage = current.findDestinationPage(doc)
+                        val pageIdx = if (destPage != null) doc.pages.indexOf(destPage) else -1
+                        if (!itemTitle.isNullOrEmpty() && pageIdx >= 0) {
+                            val blockIdx = pageToFirstBlockMap[pageIdx] ?: -1
+                            if (blockIdx in blocks.indices) {
+                                toc.add(TocEntry(itemTitle, depth, blockIdx))
+                            }
+                        }
+                        if (current.hasChildren()) {
+                            traverseOutline(current, depth + 1)
+                        }
+                        current = current.nextSibling
+                    }
+                }
+                traverseOutline(outline, 0)
             }
         } catch (e: Exception) {
             if (blocks.isEmpty()) {

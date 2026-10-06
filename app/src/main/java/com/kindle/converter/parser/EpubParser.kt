@@ -89,8 +89,11 @@ class EpubParser {
                 manifest[idref]?.let { chapterPaths.add(it) }
             }
 
-            // 3. 解析目录（NCX 或 EPUB 3 nav）
-            parseToc(entries, entriesLower, opfDir, manifest, toc)
+            // 3. 解析目录元数据（NCX 或 EPUB 3 nav）
+            val rawTocItems = parseRawToc(entries, entriesLower, opfDir, manifest)
+
+            val fileStartBlockMap = mutableMapOf<String, Int>()
+            val anchorBlockMap = mutableMapOf<String, Int>()
 
             // 4. 按 spine 顺序逐章解析正文与插图
             for (chapterPath in chapterPaths) {
@@ -101,10 +104,60 @@ class EpubParser {
                 } catch (_: Exception) {
                     continue
                 }
-                val body = getElementsByTagNameLocal(chapterDoc, "body").firstOrNull()
+                val body = getElementsByTagNameLocal(chapterDoc, "body").firstOrNull() ?: continue
                 val chapterDir = chapterPath.substringBeforeLast('/', "")
-                if (body != null) {
-                    parseHtmlContent(body, blocks, toc, chapterDir, entries, entriesLower)
+
+                // 章节间插入显式分页符（保持电子书章节独立成页）
+                if (blocks.isNotEmpty() && blocks.last() !is Block.PageBreak) {
+                    blocks.add(Block.PageBreak)
+                }
+
+                val chapterStartIdx = blocks.size
+                fileStartBlockMap[chapterPath] = chapterStartIdx
+                fileStartBlockMap[chapterPath.lowercase()] = chapterStartIdx
+
+                parseHtmlContent(
+                    node = body,
+                    blocks = blocks,
+                    anchorBlockMap = anchorBlockMap,
+                    chapterPath = chapterPath,
+                    chapterDir = chapterDir,
+                    entries = entries,
+                    entriesLower = entriesLower
+                )
+            }
+
+            // 5. 将目录项与物理 Block 索引精确关联
+            if (rawTocItems.isNotEmpty()) {
+                for (item in rawTocItems) {
+                    val targetBlock = if (item.anchor != null) {
+                        anchorBlockMap["${item.targetPath}#${item.anchor}"]
+                            ?: anchorBlockMap["${item.targetPath.lowercase()}#${item.anchor.lowercase()}"]
+                            ?: anchorBlockMap["#${item.anchor}"]
+                            ?: anchorBlockMap["#${item.anchor.lowercase()}"]
+                            ?: fileStartBlockMap[item.targetPath]
+                            ?: fileStartBlockMap[item.targetPath.lowercase()]
+                            ?: findFuzzyFileBlock(item.targetPath, fileStartBlockMap)
+                            ?: -1
+                    } else {
+                        fileStartBlockMap[item.targetPath]
+                            ?: fileStartBlockMap[item.targetPath.lowercase()]
+                            ?: findFuzzyFileBlock(item.targetPath, fileStartBlockMap)
+                            ?: -1
+                    }
+                    if (targetBlock in blocks.indices) {
+                        toc.add(TocEntry(item.label, item.depth, targetBlock))
+                    }
+                }
+            } else {
+                // 兜底：若 EPUB 内部缺少 NCX 与 NAV，从已生成的 Block 中提取所有 Heading
+                for ((idx, block) in blocks.withIndex()) {
+                    if (block is Block.Heading) {
+                        val hText = block.runs.joinToString("") { it.text }.trim()
+                        if (hText.isNotEmpty()) {
+                            toc.add(TocEntry(hText, block.level, idx))
+                        }
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -114,26 +167,42 @@ class EpubParser {
         return Document(blocks, toc, title, author)
     }
 
-    private fun parseToc(
+    private data class RawTocItem(
+        val label: String,
+        val depth: Int,
+        val targetPath: String,
+        val anchor: String?
+    )
+
+    private fun parseRawToc(
         entries: Map<String, ByteArray>,
         entriesLower: Map<String, ByteArray>,
         opfDir: String,
-        manifest: Map<String, String>,
-        toc: MutableList<TocEntry>
-    ) {
+        manifest: Map<String, String>
+    ): List<RawTocItem> {
+        val result = mutableListOf<RawTocItem>()
+
         // 优先尝试 EPUB 2 的 .ncx 目录
         val ncxPath = manifest.values.find { it.endsWith(".ncx", ignoreCase = true) }
         if (ncxPath != null) {
-            val ncxXml = findEntryBytes(entries, entriesLower, ncxPath)?.toString(Charsets.UTF_8) ?: return
-            val ncxDoc = runCatching { parseXml(ncxXml) }.getOrNull() ?: return
-            for (navPoint in getElementsByTagNameLocal(ncxDoc, "navPoint")) {
-                val label = getElementsByTagNameLocal(navPoint, "text").firstOrNull()?.textContent?.trim()
-                val depth = countAncestors(navPoint, "navPoint")
-                if (!label.isNullOrEmpty()) {
-                    toc.add(TocEntry(label, depth, -1))
+            val ncxXml = findEntryBytes(entries, entriesLower, ncxPath)?.toString(Charsets.UTF_8)
+            val ncxDoc = if (ncxXml != null) runCatching { parseXml(ncxXml) }.getOrNull() else null
+            if (ncxDoc != null) {
+                val ncxDir = ncxPath.substringBeforeLast('/', "")
+                for (navPoint in getElementsByTagNameLocal(ncxDoc, "navPoint")) {
+                    val label = getElementsByTagNameLocal(navPoint, "text").firstOrNull()?.textContent?.trim()
+                    val depth = countAncestors(navPoint, "navPoint")
+                    val contentEl = getElementsByTagNameLocal(navPoint, "content").firstOrNull()
+                    val rawSrc = contentEl?.getAttribute("src")?.trim() ?: ""
+                    val cleanSrc = rawSrc.substringBefore('#').substringBefore('?')
+                    val anchor = if ('#' in rawSrc) rawSrc.substringAfter('#').substringBefore('?').takeIf { it.isNotEmpty() } else null
+                    val resolvedPath = if (cleanSrc.isNotEmpty()) resolvePath(ncxDir, cleanSrc) else ""
+                    if (!label.isNullOrEmpty()) {
+                        result.add(RawTocItem(label, depth, resolvedPath, anchor))
+                    }
                 }
+                if (result.isNotEmpty()) return result
             }
-            return
         }
 
         // 回退尝试 EPUB 3 的 nav.xhtml / nav.html
@@ -141,31 +210,67 @@ class EpubParser {
             it.endsWith("nav.xhtml", ignoreCase = true) || it.endsWith("nav.html", ignoreCase = true)
         }
         if (navPath != null) {
-            val navXml = findEntryBytes(entries, entriesLower, navPath)?.toString(Charsets.UTF_8) ?: return
-            val navDoc = runCatching { parseXml(navXml) }.getOrNull() ?: return
-            val navEl = getElementsByTagNameLocal(navDoc, "nav").firstOrNull()
+            val navXml = findEntryBytes(entries, entriesLower, navPath)?.toString(Charsets.UTF_8)
+            val navDoc = if (navXml != null) runCatching { parseXml(navXml) }.getOrNull() else null
+            val navEl = if (navDoc != null) getElementsByTagNameLocal(navDoc, "nav").firstOrNull() else null
             if (navEl != null) {
-                parseNavList(navEl, toc, 0)
+                val navDir = navPath.substringBeforeLast('/', "")
+                parseNavList(navEl, result, 0, navDir)
             }
         }
+        return result
     }
 
-    private fun parseNavList(element: Element, toc: MutableList<TocEntry>, depth: Int) {
+    private fun parseNavList(element: Element, out: MutableList<RawTocItem>, depth: Int, navDir: String) {
         var child: Node? = element.firstChild
         while (child != null) {
             if (child is Element && (child.localName ?: child.tagName).lowercase() == "li") {
                 val link = getElementsByTagNameLocal(child, "a").firstOrNull()
                 val label = link?.textContent?.trim()
+                val rawHref = link?.getAttribute("href")?.trim() ?: ""
+                val cleanHref = rawHref.substringBefore('#').substringBefore('?')
+                val anchor = if ('#' in rawHref) rawHref.substringAfter('#').substringBefore('?').takeIf { it.isNotEmpty() } else null
+                val resolvedPath = if (cleanHref.isNotEmpty()) resolvePath(navDir, cleanHref) else ""
                 if (!label.isNullOrEmpty()) {
-                    toc.add(TocEntry(label, depth, -1))
+                    out.add(RawTocItem(label, depth, resolvedPath, anchor))
                 }
                 val nestedList = getElementsByTagNameLocal(child, "ol").firstOrNull()
+                    ?: getElementsByTagNameLocal(child, "ul").firstOrNull()
                 if (nestedList != null) {
-                    parseNavList(nestedList, toc, depth + 1)
+                    parseNavList(nestedList, out, depth + 1, navDir)
                 }
             }
             child = child.nextSibling
         }
+    }
+
+    private fun collectElementIds(el: Element): List<String> {
+        val list = mutableListOf<String>()
+        val id = el.getAttribute("id").trim()
+        if (id.isNotEmpty()) list.add(id)
+        val name = el.getAttribute("name").trim()
+        if (name.isNotEmpty() && (el.localName ?: el.tagName).equals("a", ignoreCase = true)) {
+            list.add(name)
+        }
+        val allChildren = el.getElementsByTagName("*")
+        for (i in 0 until allChildren.length) {
+            val c = allChildren.item(i) as? Element ?: continue
+            val cid = c.getAttribute("id").trim()
+            if (cid.isNotEmpty()) list.add(cid)
+            val cname = c.getAttribute("name").trim()
+            if (cname.isNotEmpty() && (c.localName ?: c.tagName).equals("a", ignoreCase = true)) {
+                list.add(cname)
+            }
+        }
+        return list
+    }
+
+    private fun findFuzzyFileBlock(targetPath: String, fileMap: Map<String, Int>): Int? {
+        val fileName = targetPath.substringAfterLast('/').lowercase()
+        if (fileName.isEmpty()) return null
+        return fileMap.entries.firstOrNull { (k, _) ->
+            k.lowercase().endsWith("/$fileName") || k.equals(fileName, ignoreCase = true)
+        }?.value
     }
 
     /**
@@ -174,7 +279,8 @@ class EpubParser {
     private fun parseHtmlContent(
         node: Node,
         blocks: MutableList<Block>,
-        toc: MutableList<TocEntry>,
+        anchorBlockMap: MutableMap<String, Int>,
+        chapterPath: String,
         chapterDir: String,
         entries: Map<String, ByteArray>,
         entriesLower: Map<String, ByteArray>
@@ -182,6 +288,8 @@ class EpubParser {
         var child: Node? = node.firstChild
         while (child != null) {
             if (child is Element) {
+                val beforeSize = blocks.size
+                val elementIds = collectElementIds(child)
                 val tag = (child.localName ?: child.tagName).lowercase()
                 when (tag) {
                     "h1", "h2", "h3", "h4", "h5", "h6" -> {
@@ -211,7 +319,7 @@ class EpubParser {
 
                     "blockquote" -> {
                         if (hasDirectBlockChildren(child)) {
-                            parseHtmlContent(child, blocks, toc, chapterDir, entries, entriesLower)
+                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries, entriesLower)
                         } else {
                             val items = collectInlineItems(child)
                             emitInlineItems(
@@ -257,7 +365,7 @@ class EpubParser {
                             if (li is Element && (li.localName ?: li.tagName).lowercase() == "li") {
                                 val currentIdx = idx
                                 val items = collectInlineItems(li)
-                                val beforeSize = blocks.size
+                                val beforeLiSize = blocks.size
                                 emitInlineItems(
                                     items = items,
                                     blocks = blocks,
@@ -268,7 +376,7 @@ class EpubParser {
                                         Block.ListItem(0, ordered = true, orderIndex = currentIdx, runs = runs)
                                     }
                                 )
-                                if (blocks.size > beforeSize) idx++
+                                if (blocks.size > beforeLiSize) idx++
                             }
                             li = li.nextSibling
                         }
@@ -337,10 +445,8 @@ class EpubParser {
                     }
 
                     "div", "section", "article", "main", "header", "footer", "figure", "aside", "center" -> {
-                        // 如果容器包含子块级元素，则递归遍历；若仅含内联文本/图片（如 Calibre 的 <div class="calibre1">），
-                        // 则直接作为整段内联流处理，防止把一段话拆碎或漏掉 <span> 文字。
                         if (hasDirectBlockChildren(child)) {
-                            parseHtmlContent(child, blocks, toc, chapterDir, entries, entriesLower)
+                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries, entriesLower)
                         } else {
                             val items = collectInlineItems(child)
                             emitInlineItems(
@@ -355,7 +461,6 @@ class EpubParser {
                     }
 
                     else -> {
-                        // 顶层直接出现的内联标签（如 <a> / <span> 包裹的 <img> 或文字）
                         val items = collectInlineItems(child)
                         emitInlineItems(
                             items = items,
@@ -365,6 +470,16 @@ class EpubParser {
                             entriesLower = entriesLower,
                             blockBuilder = { runs -> Block.Paragraph(runs) }
                         )
+                    }
+                }
+
+                if (elementIds.isNotEmpty()) {
+                    val targetBlockIdx = if (blocks.size > beforeSize) beforeSize else blocks.size
+                    for (eid in elementIds) {
+                        anchorBlockMap.putIfAbsent("$chapterPath#$eid", targetBlockIdx)
+                        anchorBlockMap.putIfAbsent("${chapterPath.lowercase()}#${eid.lowercase()}", targetBlockIdx)
+                        anchorBlockMap.putIfAbsent("#$eid", targetBlockIdx)
+                        anchorBlockMap.putIfAbsent("#${eid.lowercase()}", targetBlockIdx)
                     }
                 }
             } else if (child.nodeType == Node.TEXT_NODE) {
@@ -668,7 +783,9 @@ class EpubParser {
         runCatching {
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
         }
-        return factory.newDocumentBuilder().parse(org.xml.sax.InputSource(StringReader(xml)))
+        val builder = factory.newDocumentBuilder()
+        builder.setEntityResolver { _, _ -> org.xml.sax.InputSource(StringReader("")) }
+        return builder.parse(org.xml.sax.InputSource(StringReader(xml)))
     }
 
     private fun getElementsByTagNameLocal(doc: org.w3c.dom.Document, localName: String): List<Element> {
