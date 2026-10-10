@@ -8,6 +8,13 @@
 ## 功能特性
 
 - **多格式输入支持**：
+  - 网页剪藏（**Web Clipper**，深度整合 `web-to-epub` 原生能力）：
+    - **三层反截断与反弹窗策略**：三管齐下攻克知乎、微信公众号、CSDN、掘金、简书等平台的强制下载 App、折叠截断与粘性遮罩弹窗——① 桌面端 User-Agent 伪装绕过移动端拦截；② 离线注入 38KB 原生移植版《骚扰拦截》用户脚本（支持自动静默更新与重置）；③ 隐蔽 WebView 离线渲染执行 JavaScript、自动点击「展开阅读全文」并导出完整 DOM。
+    - **双通道导出（Kindle PDF / EPUB 3）**：
+      - **Kindle 6 英寸 PDF 通道**：通过 `WebArticleParser` 无缝对接 KindlePDF 专业排版引擎，网页表格自动转换为真网格 `Block.TableBlock`，代码转换为 44 列等宽 `Block.CodeBlock`，多篇文章之间插入 `Block.PageBreak` 保证另起新页，每篇文章标题自动映射为 1 级大纲书签；
+      - **标准 EPUB 3 通道**：纯 Kotlin 原生 `EpubBuilder` 流式打包，生成包含 NCX + Nav 双目录的合规电子书，图片自动去重并相对路径重映射。
+    - **系统「分享到」一键剪藏**：已注册 `Intent.ACTION_SEND`，在系统浏览器（Chrome、Via、夸克等）或社交 App 点击「分享 -> KindlePDF」即可直接提取排版。
+    - **批量链接提取与章节调序**：支持换行、空格及混合文本中多链接智能正则提取，列表支持上下调换顺序与正文快速纯净预览。
   - 纯文本（`.txt`，自动识别 UTF-8 / UTF-16 / GBK 编码，兼容单换行与空行分段，自动去重段首全角空格）
   - Markdown（`.md` / `.markdown`，完整支持 **GFM 管道表格**、**ASCII / Unicode 流程图与框线图**、**多级嵌套列表**、**含列表/多段的复杂引用块（Callout）**、**水平分割线 `---`**、H1~H6 标题、代码块及图文混排）
   - Word 文档（`.docx`，零 POI 依赖直接解析 OOXML，支持标题层级、列表、**结构化表格 `<w:tbl>`** 及内嵌图片提取）
@@ -40,18 +47,29 @@
 
 ```text
 app/src/main/java/com/kindle/converter/
-├── MainActivity.kt                  # 应用入口 Activity
+├── MainActivity.kt                  # 应用入口 Activity（支持 ACTION_SEND 网页链接接收）
 ├── data/
-│   └── Models.kt                    # 核心数据模型（Document, Block[含 TableBlock/HorizontalRule], TextRun, PageLayout）
+│   └── Models.kt                    # 核心数据模型（Document, Block[含 TableBlock/PageBreak], TextRun, PageLayout）
 ├── parser/                          # 多格式文档解析层（统一输出 Document 模型）
 │   ├── DocumentParser.kt            # 格式路由分发器（按后缀名 + 文件头 Magic Bytes 嗅探）
+│   ├── WebArticleParser.kt          # 网页文章 -> Document 桥接器（大纲书签、PageBreak 章节另起新页、表格/代码映射）
 │   ├── TxtParser.kt                 # TXT 解析：编码探测、CRLF 归一化、单/双换行分段、段首全角空格清理
 │   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格 + 中文 **粗体** 定界符预处理 + CommonMark AST
 │   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码、<hr> 与 <img> 抽取
 │   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、<table> 结构化提取、相对路径规范化、<img> 与 <svg><image/> 提取
 │   ├── DocxParser.kt                # DOCX 解析：document.xml 与 _rels 关系映射、<w:tbl> 结构化表格与 DrawingML/VML 内嵌图片提取
 │   ├── PdfParser.kt                 # PDF 重排解析：基于 Y 坐标容差聚合行、智能识别中英文间距、页眉页脚过滤与位图提取
-│   └── ImageDownloader.kt           # 远程图片下载与通用位图尺寸探测（inJustDecodeBounds 元数据读取、文件头魔数识别）
+│   └── ImageDownloader.kt           # 远程图片下载与通用位图尺寸探测
+├── web/                             # 网页抓取与反截断核心层（web-to-epub 整合）
+│   ├── fetcher/WebFetcher.kt        # OkHttp 客户端，支持 Desktop/Mobile UA 伪装、编码嗅探与 8MB 熔断
+│   ├── extractor/                   # Readability4J 核心正文提取器 + OverlayCleaner 遮罩过滤
+│   ├── script/ScriptRepository.kt   # 用户脚本持久化、ScriptCat 在线更新与内置资产重置
+│   ├── settings/                    # DataStore 用户抓取偏好配置
+│   └── webview/                     # 隐蔽 WebView 渲染器，支持用户脚本注入与 DOM 导出
+├── epub/                            # 标准 EPUB 3 电子书生成层
+│   ├── EpubBuilder.kt               # 纯 Kotlin 原生 EPUB 3 + NCX/Nav 流式打包器
+│   ├── XhtmlConverter.kt            # Jsoup Safelist XHTML 清洗与相对图片路径重映射
+│   └── WebImageDownloader.kt        # 网页图片哈希去重下载器
 ├── typeset/                         # 排版引擎核心层
 │   ├── ChineseTypography.kt         # 中文标点禁则表、CJK 字符分类、东亚半角/全角网格列宽计算与特殊符号降级映射表
 │   └── TypesettingEngine.kt         # 核心排版管线：TextMeasurer + LineBreaker + Table/CodeBlock 自适应重排 + Paginator
@@ -60,11 +78,14 @@ app/src/main/java/com/kindle/converter/
 │   ├── PdfGenerator.kt              # 将 PageLayout 渲染为最终 PDF（含 FILL_STROKE 伪粗体、横竖线绘制、符号降级、大纲书签）
 │   └── PresetRepository.kt          # 排版参数与预设持久化存储
 ├── ui/                              # Jetpack Compose 界面层
-│   ├── ConverterScreen.kt           # 主界面（文件选择、字体管理、排版参数面板、预览弹窗）
+│   ├── MainTabScreen.kt             # Material 3 底部导航容器（网页剪藏 / 本地文档 / 设置规则）
+│   ├── ConverterScreen.kt           # 本地文档转 PDF 界面
+│   ├── web/                         # 网页剪藏界面（WebClipperScreen）与设置面板（WebSettingsScreen）
 │   ├── PreviewCanvas.kt             # Compose Canvas 实时排版预览渲染器（支持横竖网格线与缩放拖拽）
 │   └── Theme.kt                     # Material 3 主题配色
 └── viewmodel/
-    └── ConverterViewModel.kt        # 状态管理、异步解析转换管线与同目录文件输出回退逻辑
+    ├── ConverterViewModel.kt        # 本地文件转换状态管理
+    └── WebClipperViewModel.kt       # 网页抓取状态机、并发调度与双通道导出调度器
 ```
 
 ---

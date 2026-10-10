@@ -30,7 +30,9 @@ import com.kindle.converter.viewmodel.ConverterViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConverterScreen(
-    viewModel: ConverterViewModel = viewModel()
+    viewModel: ConverterViewModel = viewModel(),
+    modifier: Modifier = Modifier,
+    showTopBar: Boolean = false
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -63,27 +65,31 @@ fun ConverterScreen(
     var presetName by remember { mutableStateOf("") }
 
     Scaffold(
+        modifier = modifier,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            Surface(
-                color = androidx.compose.ui.graphics.Color.Transparent,
-                tonalElevation = 0.dp
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .height(56.dp)
-                        .padding(horizontal = 16.dp)
-                        .offset { IntOffset(10, 0) },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Start
+            if (showTopBar) {
+                Surface(
+                    color = androidx.compose.ui.graphics.Color.Transparent,
+                    tonalElevation = 0.dp
                 ) {
-                    Text(
-                        "Kindle PDF Converter",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .height(56.dp)
+                            .padding(horizontal = 16.dp)
+                            .offset { IntOffset(10, 0) },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Start
+                    ) {
+                        Text(
+                            "Kindle PDF Converter",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
         },
