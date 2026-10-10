@@ -129,6 +129,7 @@ fun MainTabScreen(
                 )
                 MainTab.SETTINGS -> WebSettingsScreen(
                     viewModel = webViewModel,
+                    converterViewModel = converterViewModel,
                     modifier = Modifier.fillMaxSize()
                 )
             }

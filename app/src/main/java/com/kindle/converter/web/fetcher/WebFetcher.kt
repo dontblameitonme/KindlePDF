@@ -1,6 +1,8 @@
 package com.kindle.converter.web.fetcher
 
 import com.kindle.converter.web.settings.UaMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.charset.Charset
@@ -37,7 +39,7 @@ class WebFetcher {
         custom.ifBlank { if (mode == UaMode.DESKTOP) DESKTOP_UA else MOBILE_UA }
 
     /** 下载网页并返回解码后的 HTML */
-    suspend fun fetchHtml(url: String, userAgent: String = DESKTOP_UA): String {
+    suspend fun fetchHtml(url: String, userAgent: String = DESKTOP_UA): String = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", userAgent)
@@ -77,7 +79,7 @@ class WebFetcher {
                 buffer.toByteArray()
             }
 
-            return decode(bytes, contentType)
+            decode(bytes, contentType)
         }
     }
 

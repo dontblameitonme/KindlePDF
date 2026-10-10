@@ -413,16 +413,47 @@ private fun FontSection(
     onDeleteFont: (String) -> Unit,
     onImportFont: () -> Unit
 ) {
-    if (fonts.isEmpty()) {
-        Text(
-            text = "尚未导入字体，请点击下方按钮导入 TTF/OTF 字体。",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-    } else {
+    val isSystemSelected = selectedFontId == com.kindle.converter.pdf.FontManager.SYSTEM_FONT_ID ||
+            (selectedFontId == null || fonts.none { it.id == selectedFontId })
+
+    // 系统默认字体选项
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = { onSelectFont(com.kindle.converter.pdf.FontManager.SYSTEM_FONT_ID) }) {
+            Icon(
+                imageVector = if (isSystemSelected) Icons.Default.CheckCircle else Icons.Default.Circle,
+                contentDescription = null,
+                tint = if (isSystemSelected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable { onSelectFont(com.kindle.converter.pdf.FontManager.SYSTEM_FONT_ID) }
+        ) {
+            Text(
+                text = "系统默认字体",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (isSystemSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSystemSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "自动识别设备预装中文字体，无需导入即可直接排版",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
+    if (fonts.isNotEmpty()) {
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
         fonts.forEach { entry ->
-            val selected = entry.id == selectedFontId
+            val selected = entry.id == selectedFontId && !isSystemSelected
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -443,6 +474,7 @@ private fun FontSection(
                         .weight(1f)
                         .clickable { onSelectFont(entry.id) },
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                     color = if (selected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurface
                 )
@@ -455,13 +487,14 @@ private fun FontSection(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
     }
+
+    Spacer(modifier = Modifier.height(8.dp))
 
     OutlinedButton(onClick = onImportFont, modifier = Modifier.fillMaxWidth()) {
         Icon(Icons.Default.Add, contentDescription = null)
         Spacer(modifier = Modifier.width(8.dp))
-        Text("导入字体")
+        Text("导入自定义字体 (TTF/OTF)")
     }
 }
 

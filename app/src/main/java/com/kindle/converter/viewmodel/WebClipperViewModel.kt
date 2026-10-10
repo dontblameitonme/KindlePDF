@@ -26,6 +26,8 @@ import com.kindle.converter.web.model.WebArticle
 import com.kindle.converter.web.script.ScriptInfo
 import com.kindle.converter.web.settings.UaMode
 import com.kindle.converter.web.settings.WebSettings
+import com.kindle.converter.pdf.PresetRepository
+import com.kindle.converter.settings.SettingsBackupManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -38,11 +40,18 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.concurrent.atomic.AtomicLong
 
 class WebClipperViewModel(application: Application) : AndroidViewModel(application) {
 
     private val container: WebContainer = (application as KindleConverterApp).webContainer
+    private val backupManager = SettingsBackupManager(
+        context = application,
+        presetRepo = PresetRepository(application),
+        webContainer = container
+    )
 
     data class UiState(
         val links: List<LinkItem> = emptyList(),
@@ -171,7 +180,7 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
     fun refetch(id: Long, mode: FetchMode) {
         if (_uiState.value.isWorking) return
         _uiState.update { it.copy(isWorking = true, workingMessage = "正在重新抓取该页面…") }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             when (mode) {
                 FetchMode.DEFAULT -> fetchOne(id)
                 FetchMode.DESKTOP -> fetchOne(id, uaOverride = UaMode.DESKTOP)
@@ -181,8 +190,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private suspend fun fetchOne(id: Long, uaOverride: UaMode? = null, useWebView: Boolean = false) {
-        val item = _uiState.value.links.firstOrNull { it.id == id } ?: return
+    private suspend fun fetchOne(id: Long, uaOverride: UaMode? = null, useWebView: Boolean = false) = withContext(Dispatchers.IO) {
+        val item = _uiState.value.links.firstOrNull { it.id == id } ?: return@withContext
         updateStatus(id, LinkStatus.Fetching)
         try {
             val webSettings = container.settingsRepository.settings.first()
@@ -301,4 +310,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         container.scriptRepository.resetToAsset()
         _uiState.update { it.copy(snackbar = "已恢复为内置《骚扰拦截》脚本") }
     }
+
+    suspend fun exportSettings(out: OutputStream) = backupManager.exportSettings(out)
+
+    suspend fun importSettings(input: InputStream): Result<String> = backupManager.importSettings(input)
 }

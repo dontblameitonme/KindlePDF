@@ -282,6 +282,15 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun reloadPresets() {
+        _uiState.update {
+            it.copy(
+                presets = presetRepo.list(),
+                selectedPresetName = presetRepo.loadLastPresetName()
+            )
+        }
+    }
+
     // --- 预览 ---
 
     fun openPreviewDialog() {

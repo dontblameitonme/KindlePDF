@@ -118,7 +118,7 @@ class PresetRepository(private val context: Context) {
         try { file.writeText(arr.toString(2)) } catch (_: Exception) {}
     }
 
-    private fun paramsToJson(p: TypesettingParams): JSONObject = JSONObject().apply {
+    fun paramsToJson(p: TypesettingParams): JSONObject = JSONObject().apply {
         put("pageWidth", p.pageWidth)
         put("pageHeight", p.pageHeight)
         put("marginTop", p.marginTop)
@@ -140,7 +140,7 @@ class PresetRepository(private val context: Context) {
         put("enableWidowControl", p.enableWidowControl)
     }
 
-    private fun paramsFromJson(o: JSONObject?): TypesettingParams {
+    fun paramsFromJson(o: JSONObject?): TypesettingParams {
         if (o == null) return TypesettingParams()
         val taName = o.optString("textAlignment", TypesettingParams().textAlignment.name)
         val ta = try { TextAlignment.valueOf(taName) } catch (_: Exception) { TypesettingParams().textAlignment }

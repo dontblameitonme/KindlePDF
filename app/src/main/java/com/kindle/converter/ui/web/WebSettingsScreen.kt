@@ -17,14 +17,64 @@ import com.kindle.converter.viewmodel.WebClipperViewModel
 import com.kindle.converter.web.settings.UaMode
 import java.util.Date
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import com.kindle.converter.viewmodel.ConverterViewModel
+import kotlinx.coroutines.launch
+
 @Composable
 fun WebSettingsScreen(
     viewModel: WebClipperViewModel,
+    converterViewModel: ConverterViewModel? = null,
     modifier: Modifier = Modifier
 ) {
     val scriptInfo by viewModel.scriptInfo.collectAsState(initial = null)
     val settings by viewModel.settings.collectAsState(initial = null)
     val scrollState = rememberScrollState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val exportSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        viewModel.exportSettings(out)
+                    }
+                    Toast.makeText(context, "设置与排版预设已成功导出", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    val importSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                try {
+                    val result = context.contentResolver.openInputStream(uri)?.use { input ->
+                        viewModel.importSettings(input)
+                    } ?: Result.failure(Exception("无法打开文件流"))
+
+                    if (result.isSuccess) {
+                        converterViewModel?.reloadPresets()
+                        Toast.makeText(context, result.getOrNull() ?: "设置导入成功", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "导入失败: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "读取设置文件失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -185,6 +235,78 @@ fun WebSettingsScreen(
                         valueRange = 1f..6f,
                         steps = 4
                     )
+                }
+            }
+        }
+
+        // 设置备份与迁移卡片
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "设置备份与迁移",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "备份/恢复排版预设、网页规则与配置",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        Icons.Default.Backup,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                Text(
+                    "导出格式为通用 JSON 文件，包含所有已保存的排版参数预设、界面状态、网页抓取配置（UA、图片嵌入、并发数）以及自定义反截断脚本。更换手机或重装应用时可一键导入恢复。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.35f
+                )
+
+                Spacer(Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            exportSettingsLauncher.launch("kindle_pdf_settings.json")
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导出设置")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            importSettingsLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导入设置")
+                    }
                 }
             }
         }
