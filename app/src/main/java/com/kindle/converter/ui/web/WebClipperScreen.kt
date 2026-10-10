@@ -43,9 +43,11 @@ fun WebClipperScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsState()
+    val webSettings by viewModel.settings.collectAsState(initial = null)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
+    var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
     var showPdfConfirmDialog by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var exportStatusText by remember { mutableStateOf("") }
@@ -184,7 +186,23 @@ fun WebClipperScreen(
                         Text("＋ 填入测试链接", style = MaterialTheme.typography.labelSmall)
                     }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
+                                activeBrowserUrl = url
+                            },
+                            enabled = !state.isWorking,
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("内置浏览器")
+                        }
+
                         if (inputText.isNotBlank() || state.links.isNotEmpty()) {
                             OutlinedButton(
                                 onClick = {
@@ -261,7 +279,8 @@ fun WebClipperScreen(
                     },
                     onRemove = { viewModel.removeLink(item.id) },
                     onMove = { delta -> viewModel.moveLink(item.id, delta) },
-                    onRefetch = { mode -> viewModel.refetch(item.id, mode) }
+                    onRefetch = { mode -> viewModel.refetch(item.id, mode) },
+                    onOpenInBrowser = { url -> activeBrowserUrl = url }
                 )
             }
 
@@ -388,6 +407,20 @@ fun WebClipperScreen(
             onDismiss = { viewModel.closePreview() }
         )
     }
+
+    // Via 风格轻量级内置浏览器
+    val browserUrl = activeBrowserUrl
+    if (browserUrl != null) {
+        InAppBrowserDialog(
+            initialUrl = browserUrl,
+            initialDarkMode = webSettings?.webViewDarkMode ?: false,
+            onDismiss = { activeBrowserUrl = null },
+            onToggleDarkMode = { viewModel.setWebViewDarkMode(it) },
+            onClipCurrentPage = { url, html, title ->
+                viewModel.addFromHtml(url, html, title)
+            }
+        )
+    }
 }
 
 @Composable
@@ -399,7 +432,8 @@ private fun LinkItemCard(
     onClick: () -> Unit,
     onRemove: () -> Unit,
     onMove: (Int) -> Unit,
-    onRefetch: (FetchMode) -> Unit
+    onRefetch: (FetchMode) -> Unit,
+    onOpenInBrowser: (String) -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -469,14 +503,26 @@ private fun LinkItemCard(
                     }
                 }
                 is LinkStatus.Error -> {
-                    Text(
-                        text = status.message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                    Column(modifier = Modifier.padding(top = 4.dp)) {
+                        Text(
+                            text = status.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = { onOpenInBrowser(item.url) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(30.dp)
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("在内置浏览器中打开验证", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                 }
                 else -> {}
             }
@@ -494,6 +540,10 @@ private fun LinkItemCard(
                     }
                     DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
                         DropdownMenuItem(
+                            text = { Text("在内置浏览器中打开（所见即所得）") },
+                            onClick = { menuExpanded = false; onOpenInBrowser(item.url) }
+                        )
+                        DropdownMenuItem(
                             text = { Text("默认重新抓取") },
                             onClick = { menuExpanded = false; onRefetch(FetchMode.DEFAULT) }
                         )
@@ -502,7 +552,7 @@ private fun LinkItemCard(
                             onClick = { menuExpanded = false; onRefetch(FetchMode.DESKTOP) }
                         )
                         DropdownMenuItem(
-                            text = { Text("WebView 渲染（自动点击展开/拦截App弹窗）") },
+                            text = { Text("后台 WebView 渲染（自动展开/拦截App）") },
                             onClick = { menuExpanded = false; onRefetch(FetchMode.WEBVIEW) }
                         )
                     }

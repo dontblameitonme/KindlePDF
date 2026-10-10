@@ -219,6 +219,66 @@ fun WebSettingsScreen(
 
                 Divider(modifier = Modifier.padding(vertical = 12.dp))
 
+                // 网页全局深色模式
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("网页全局深色模式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("内置浏览器与网页渲染时自动适配舒适深色背景（永久保存选择状态）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = settings?.webViewDarkMode ?: false,
+                        onCheckedChange = { viewModel.setWebViewDarkMode(it) }
+                    )
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // 直连 WebView 域名列表
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("直连 WebView 渲染域名（免403）", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Text("命中的域名直接调用后台 Chromium 渲染，彻底避免 403 拦截（支持以逗号或换行分隔）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    var domainText by remember(settings?.directWebViewDomains) {
+                        mutableStateOf(settings?.directWebViewDomains ?: "zhihu.com, zhuanlan.zhihu.com, juejin.cn")
+                    }
+                    OutlinedTextField(
+                        value = domainText,
+                        onValueChange = {
+                            domainText = it
+                            viewModel.setDirectWebViewDomains(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        maxLines = 3,
+                        textStyle = MaterialTheme.typography.bodySmall,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // 始终使用 WebView 渲染
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("始终使用 WebView 渲染引擎", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Text("所有网页直接调用 Chromium 内核完整渲染，兼容性最高但速度较慢。默认关闭（智能双轨模式，优先 0.3s 极速通道，遇反爬自动升级）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = settings?.alwaysUseWebView ?: false,
+                        onCheckedChange = { viewModel.setAlwaysUseWebView(it) }
+                    )
+                }
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp))
+
                 // 并发数
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(

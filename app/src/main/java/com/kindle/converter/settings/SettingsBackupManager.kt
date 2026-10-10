@@ -64,6 +64,9 @@ class SettingsBackupManager(
         webObj.put("defaultUa", webSettings.defaultUa.name)
         webObj.put("concurrency", webSettings.concurrency)
         webObj.put("customUserAgent", webSettings.customUserAgent)
+        webObj.put("alwaysUseWebView", webSettings.alwaysUseWebView)
+        webObj.put("directWebViewDomains", webSettings.directWebViewDomains)
+        webObj.put("webViewDarkMode", webSettings.webViewDarkMode)
         root.put("web", webObj)
 
         // 3. 用户脚本
@@ -141,6 +144,15 @@ class SettingsBackupManager(
                 }
                 if (webObj.has("customUserAgent")) {
                     webContainer.settingsRepository.setCustomUserAgent(webObj.optString("customUserAgent", ""))
+                }
+                if (webObj.has("alwaysUseWebView")) {
+                    webContainer.settingsRepository.setAlwaysUseWebView(webObj.optBoolean("alwaysUseWebView", false))
+                }
+                if (webObj.has("directWebViewDomains")) {
+                    webContainer.settingsRepository.setDirectWebViewDomains(webObj.optString("directWebViewDomains", "zhihu.com, zhuanlan.zhihu.com, juejin.cn"))
+                }
+                if (webObj.has("webViewDarkMode")) {
+                    webContainer.settingsRepository.setWebViewDarkMode(webObj.optBoolean("webViewDarkMode", false))
                 }
                 restoredWeb = true
             }

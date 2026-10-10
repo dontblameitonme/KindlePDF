@@ -190,9 +190,19 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun isSiteRequiringWebView(url: String): Boolean {
-        val u = url.lowercase()
-        return u.contains("zhihu.com") || u.contains("zhuanlan.zhihu") || u.contains("juejin.cn")
+    private fun isSiteRequiringWebView(url: String, directDomains: String): Boolean {
+        val host = try {
+            java.net.URI(url).host?.lowercase() ?: ""
+        } catch (_: Exception) {
+            url.lowercase()
+        }
+        val domainList = directDomains.split(',', ';', '\n', ' ')
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+
+        return domainList.any { domain ->
+            host == domain || host.endsWith(".$domain") || url.lowercase().contains(domain)
+        }
     }
 
     private suspend fun fetchOne(id: Long, uaOverride: UaMode? = null, useWebView: Boolean = false) = withContext(Dispatchers.IO) {
@@ -200,7 +210,7 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         updateStatus(id, LinkStatus.Fetching)
         try {
             val webSettings = container.settingsRepository.settings.first()
-            val forceWebView = useWebView || isSiteRequiringWebView(item.url)
+            val forceWebView = useWebView || webSettings.alwaysUseWebView || isSiteRequiringWebView(item.url, webSettings.directWebViewDomains)
             val article = if (forceWebView) {
                 val script = runCatching { container.scriptRepository.readCurrentScript() }.getOrNull()
                 val html = container.webViewRenderer.render(item.url, script, desktopUa = true)
@@ -317,6 +327,39 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
     fun setEmbedImages(value: Boolean) = viewModelScope.launch { container.settingsRepository.setEmbedImages(value) }
     fun setDefaultUa(value: UaMode) = viewModelScope.launch { container.settingsRepository.setDefaultUa(value) }
     fun setConcurrency(value: Int) = viewModelScope.launch { container.settingsRepository.setConcurrency(value) }
+    fun setAlwaysUseWebView(value: Boolean) = viewModelScope.launch { container.settingsRepository.setAlwaysUseWebView(value) }
+    fun setDirectWebViewDomains(value: String) = viewModelScope.launch { container.settingsRepository.setDirectWebViewDomains(value) }
+    fun setWebViewDarkMode(value: Boolean) = viewModelScope.launch { container.settingsRepository.setWebViewDarkMode(value) }
+
+    /** 直接从已有 HTML 字符串（如内置浏览器已渲染的 DOM）提取正文并加入列表 */
+    fun addFromHtml(url: String, html: String, fallbackTitle: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val article = try {
+                container.contentExtractor.extract(url, html)
+            } catch (e: Exception) {
+                val title = fallbackTitle?.ifBlank { null } ?: "网页剪藏正文"
+                WebArticle(
+                    url = url,
+                    title = title,
+                    contentHtml = html,
+                    possiblyTruncated = false
+                )
+            }
+            val item = LinkItem(
+                id = idGenerator.incrementAndGet(),
+                url = url,
+                status = LinkStatus.Success(article)
+            )
+            _uiState.update { state ->
+                val existing = state.links.filterNot { it.url == url }
+                state.copy(
+                    links = existing + item,
+                    snackbar = "已成功剪藏：《${article.title.take(20)}》"
+                )
+            }
+        }
+    }
+
     fun updateScriptFromUrl() = viewModelScope.launch {
         _uiState.update { it.copy(isWorking = true, workingMessage = "正在从 ScriptCat 检查脚本更新…") }
         val res = container.scriptRepository.updateFromUrl()

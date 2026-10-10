@@ -16,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -29,6 +30,9 @@ import kotlin.coroutines.resumeWithException
  */
 class WebViewRenderer(private val context: Context) {
 
+    /** 串行互斥锁：确保后台 WebView 渲染单实例排队执行，防止多任务并发导致 Chromium 内存暴涨 OOM */
+    private val renderMutex = kotlinx.coroutines.sync.Mutex()
+
     companion object {
         /** 总体超时：加载 + 脚本执行 + 导出 */
         const val TOTAL_TIMEOUT_MS = 45_000L
@@ -36,9 +40,13 @@ class WebViewRenderer(private val context: Context) {
         private const val SCRIPT_SETTLE_MS = 1_500L
         private const val EXPORT_TIMEOUT_MS = 5_000L
 
-        /** 页面早期注入的脚本执行框架 */
+        /** 页面早期注入的脚本执行框架与前台可见性伪装（破坏无头 0x0 视口反爬探查） */
         private val HARNESS_JS = """
             (function () {
+              try {
+                Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+                Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+              } catch (e) {}
               if (window.__w2e__) return;
               window.__w2e__ = {
                 run: function (code) {
@@ -92,46 +100,56 @@ class WebViewRenderer(private val context: Context) {
         url: String,
         userscript: String?,
         desktopUa: Boolean,
-    ): String = withTimeout(TOTAL_TIMEOUT_MS) {
-        val htmlDeferred = CompletableDeferred<String>()
+    ): String = renderMutex.withLock {
+        withTimeout(TOTAL_TIMEOUT_MS) {
+            val htmlDeferred = CompletableDeferred<String>()
 
-        val webView = createWebView()
-        configure(webView, userscript, htmlDeferred, desktopUa)
-        postOnMain { webView.loadUrl(url) }
+            val webView = createWebView()
+            configure(webView, userscript, htmlDeferred, desktopUa)
+            postOnMain { webView.loadUrl(url) }
 
-        try {
-            // 等待首轮加载完成
-            withTimeoutOrNull(LOAD_TIMEOUT_MS) { htmlDeferred.await() }
+            try {
+                // 等待首轮加载完成
+                withTimeoutOrNull(LOAD_TIMEOUT_MS) { htmlDeferred.await() }
 
-            // 检测是否存在知乎 WAF 挑战 (zh-zse-ck) 或类似反爬验证
-            // 若存在，轮询等待其在 Chromium 中执行脚本并刷新重载完成
-            repeat(12) {
-                val isChallenge = evalJsSync(webView, "(function(){ return !!document.getElementById('zh-zse-ck'); })()")
-                if (isChallenge == "true") {
-                    delay(1_000)
-                } else {
-                    return@repeat
+                // 检测是否存在知乎 WAF 挑战 (zh-zse-ck) 或类似反爬验证
+                // 若存在，轮询等待其在 Chromium 中执行脚本并刷新重载完成
+                repeat(12) {
+                    val isChallenge = evalJsSync(webView, "(function(){ return !!document.getElementById('zh-zse-ck'); })()")
+                    if (isChallenge == "true") {
+                        delay(1_000)
+                    } else {
+                        return@repeat
+                    }
                 }
+
+                // 自动展开 + 滚动触发懒加载，等待脚本与页面稳定
+                evalOnMain(webView, AUTO_EXPAND_JS)
+                delay(1_500)
+                evalOnMain(webView, AUTO_EXPAND_JS)
+                delay(SCRIPT_SETTLE_MS)
+
+                // 导出渲染后的完整 DOM
+                exportDom(webView)
+            } finally {
+                destroyOnMain(webView)
             }
-
-            // 自动展开 + 滚动触发懒加载，等待脚本与页面稳定
-            evalOnMain(webView, AUTO_EXPAND_JS)
-            delay(1_500)
-            evalOnMain(webView, AUTO_EXPAND_JS)
-            delay(SCRIPT_SETTLE_MS)
-
-            // 导出渲染后的完整 DOM
-            exportDom(webView)
-        } finally {
-            destroyOnMain(webView)
         }
     }
 
-    /** 在主线程创建 WebView */
+    /** 在主线程创建 WebView 并赋予 1080x1920 虚拟视口尺寸（防止 0x0 导致 Chromium 节流及反爬无头检测拦截） */
     private suspend fun createWebView(): WebView = suspendCancellableCoroutine { cont ->
         Handler(Looper.getMainLooper()).post {
             try {
-                cont.resume(WebView(context))
+                val wv = WebView(context)
+                val width = 1080
+                val height = 1920
+                wv.measure(
+                    android.view.View.MeasureSpec.makeMeasureSpec(width, android.view.View.MeasureSpec.EXACTLY),
+                    android.view.View.MeasureSpec.makeMeasureSpec(height, android.view.View.MeasureSpec.EXACTLY)
+                )
+                wv.layout(0, 0, width, height)
+                cont.resume(wv)
             } catch (e: Exception) {
                 cont.resumeWithException(e)
             }
