@@ -128,8 +128,22 @@ class WebArticleParser {
                 }
             }
 
+            tagName in listOf("div", "section", "article", "main", "figure", "header", "footer") -> {
+                val hasBlockChildren = element.children().any { child ->
+                    child.tagName().lowercase() in listOf(
+                        "p", "div", "section", "article", "figure", "h1", "h2", "h3", "h4", "h5", "h6",
+                        "table", "pre", "blockquote", "ul", "ol", "img"
+                    )
+                }
+                if (hasBlockChildren) {
+                    parseElementChildren(element, baseUrl, blocks, toc, images, imageResolver)
+                } else {
+                    parseLeafBlock(element, baseUrl, blocks, images, imageResolver)
+                }
+            }
+
             tagName == "img" -> {
-                val src = element.absUrl("src").ifBlank { element.attr("src") }
+                val src = extractImageUrl(element)
                 if (src.isNotBlank()) {
                     val img = imageResolver(src)
                     if (img != null) {
@@ -141,25 +155,64 @@ class WebArticleParser {
             }
 
             else -> {
-                // 普通块元素（p, div, section, figure等）
-                val imgElements = element.select("img")
-                val runs = extractTextRuns(element)
-                if (runs.isNotEmpty()) {
-                    blocks.add(Block.Paragraph(runs))
-                }
-                for (imgEl in imgElements) {
-                    val src = imgEl.absUrl("src").ifBlank { imgEl.attr("src") }
-                    if (src.isNotBlank()) {
-                        val img = imageResolver(src)
-                        if (img != null) {
-                            val imgName = "web_img_${images.size + 1}.${img.format}"
-                            images[imgName] = img.bytes
-                            blocks.add(Block.ImageBlock(img.bytes, img.widthPx, img.heightPx, img.format))
-                        }
-                    }
+                // 普通块元素（p, span等）
+                parseLeafBlock(element, baseUrl, blocks, images, imageResolver)
+            }
+        }
+    }
+
+    private suspend fun parseLeafBlock(
+        element: Element,
+        baseUrl: String,
+        blocks: MutableList<Block>,
+        images: MutableMap<String, ByteArray>,
+        imageResolver: suspend (String) -> DownloadedImage?
+    ) {
+        val runs = extractTextRuns(element)
+        if (runs.isNotEmpty()) {
+            blocks.add(Block.Paragraph(runs))
+        }
+        val imgElements = element.select("img")
+        for (imgEl in imgElements) {
+            val src = extractImageUrl(imgEl)
+            if (src.isNotBlank()) {
+                val img = imageResolver(src)
+                if (img != null) {
+                    val imgName = "web_img_${images.size + 1}.${img.format}"
+                    images[imgName] = img.bytes
+                    blocks.add(Block.ImageBlock(img.bytes, img.widthPx, img.heightPx, img.format))
                 }
             }
         }
+    }
+
+    private fun extractImageUrl(img: Element): String {
+        val lazyAttrs = listOf(
+            "data-actualsrc",    // 知乎
+            "data-original",     // 知乎、CSDN、微博
+            "data-src",          // 微信公众号、掘金
+            "data-origin-src",   // 简书
+            "data-lazy-src",     // 通用
+            "data-echo",
+            "data-url",
+            "data-original-src",
+            "src"
+        )
+        for (attr in lazyAttrs) {
+            val raw = img.attr(attr).trim()
+            if (raw.isNotBlank() && !raw.startsWith("data:image/svg", ignoreCase = true) && raw != "about:blank") {
+                val abs = img.absUrl(attr).trim()
+                val candidate = if (abs.isNotBlank()) abs else if (raw.startsWith("//")) "https:$raw" else raw
+                if (candidate.startsWith("http://", ignoreCase = true) ||
+                    candidate.startsWith("https://", ignoreCase = true) ||
+                    candidate.startsWith("data:image/", ignoreCase = true)
+                ) {
+                    return candidate
+                }
+            }
+        }
+        val fallback = img.absUrl("src").ifBlank { img.attr("src") }.trim()
+        return if (fallback.startsWith("//")) "https:$fallback" else fallback
     }
 
     private fun parseTable(tableEl: Element): Block.TableBlock? {

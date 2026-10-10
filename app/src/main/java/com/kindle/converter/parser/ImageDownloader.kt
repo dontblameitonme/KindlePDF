@@ -22,16 +22,64 @@ data class DownloadedImage(
 object ImageDownloader {
 
     /** 下载一张远程图片；非 2xx、超时、解码失败均返回 null */
-    suspend fun download(url: String): DownloadedImage? = withContext(Dispatchers.IO) {
+    suspend fun download(url: String, refererHint: String = ""): DownloadedImage? = withContext(Dispatchers.IO) {
         try {
-            val conn = URL(url).openConnection() as HttpURLConnection
+            val cleanUrl = url.trim()
+            if (cleanUrl.isBlank()) return@withContext null
+
+            // 1. 内联 Base64 图片 (data:image/...)
+            if (cleanUrl.startsWith("data:image/", ignoreCase = true)) {
+                val commaIdx = cleanUrl.indexOf(',')
+                if (commaIdx > 0) {
+                    val base64Part = cleanUrl.substring(commaIdx + 1)
+                    val bytes = try {
+                        android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+                    } catch (_: Exception) { null }
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        val fmt = guessFormat(bytes, "")
+                        val (w, h) = decodeDimensions(bytes) ?: return@withContext null
+                        return@withContext DownloadedImage(
+                            bytes = bytes,
+                            format = fmt,
+                            widthPx = w.coerceAtLeast(1),
+                            heightPx = h.coerceAtLeast(1)
+                        )
+                    }
+                }
+                return@withContext null
+            }
+
+            // 2. 协议相对 URL 补充 https:
+            val targetUrl = if (cleanUrl.startsWith("//")) "https:$cleanUrl" else cleanUrl
+            if (!targetUrl.startsWith("http://", ignoreCase = true) && !targetUrl.startsWith("https://", ignoreCase = true)) {
+                return@withContext null
+            }
+
+            val conn = URL(targetUrl).openConnection() as HttpURLConnection
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
             conn.instanceFollowRedirects = true
             conn.setRequestProperty(
                 "User-Agent",
-                "Mozilla/5.0 (Kindle PDF)"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
             )
+            conn.setRequestProperty(
+                "Accept",
+                "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            )
+
+            // 防盗链：针对微信公众平台、知乎、CSDN、微博等图片 CDN 补充来源 Referer
+            val host = runCatching { URL(targetUrl).host.lowercase() }.getOrDefault("")
+            val referer = when {
+                host.contains("zhimg.com") -> "https://www.zhihu.com/"
+                host.contains("qpic.cn") || host.contains("weixin.qq.com") -> "https://mp.weixin.qq.com/"
+                host.contains("csdnimg.cn") || host.contains("csdn.net") -> "https://blog.csdn.net/"
+                host.contains("sinaimg.cn") || host.contains("weibo.com") -> "https://weibo.com/"
+                refererHint.isNotBlank() -> refererHint
+                else -> "https://$host/"
+            }
+            conn.setRequestProperty("Referer", referer)
+
             conn.connect()
             val code = conn.responseCode
             if (code !in 200..299) {
@@ -42,11 +90,7 @@ object ImageDownloader {
             conn.disconnect()
             if (bytes.isEmpty()) return@withContext null
 
-            val fmt = guessFormat(bytes, url)
-            // 关键修复：
-            // BitmapFactory.Options.inJustDecodeBounds = true 时，decodeByteArray 按 Android API 规范
-            // 必然返回 null，并将真实宽高写入 opts.outWidth / opts.outHeight。
-            // 旧代码判断 `if (bmp != null)` 永远为 false，导致所有图片宽高被硬编码为 200x200 正方形造成严重变形。
+            val fmt = guessFormat(bytes, targetUrl)
             val (w, h) = decodeDimensions(bytes) ?: return@withContext null
             DownloadedImage(
                 bytes = bytes,

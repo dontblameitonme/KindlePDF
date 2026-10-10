@@ -84,7 +84,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private val fontManager = FontManager(application)
+    val fontManager = FontManager(application)
     private val presetRepo = PresetRepository(application)
     private val pdfGenerator = PdfGenerator(application, fontManager)
 

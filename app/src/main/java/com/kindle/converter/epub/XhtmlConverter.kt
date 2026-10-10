@@ -37,6 +37,22 @@ object XhtmlConverter {
         // 移除脚本与样式残留
         document.select("script, style, noscript, iframe").remove()
 
+        // 规范化图片真实 URL（处理知乎 data-actualsrc、微信 data-src 等）
+        for (img in document.select("img")) {
+            val lazyAttrs = listOf("data-actualsrc", "data-original", "data-src", "data-origin-src", "data-lazy-src", "data-echo", "src")
+            for (attr in lazyAttrs) {
+                val raw = img.attr(attr).trim()
+                if (raw.isNotBlank() && !raw.startsWith("data:image/svg", ignoreCase = true) && raw != "about:blank") {
+                    val abs = img.absUrl(attr).trim()
+                    val candidate = if (abs.isNotBlank()) abs else if (raw.startsWith("//")) "https:$raw" else raw
+                    if (candidate.startsWith("http://", ignoreCase = true) || candidate.startsWith("https://", ignoreCase = true)) {
+                        img.attr("src", candidate)
+                        break
+                    }
+                }
+            }
+        }
+
         // 白名单清洗（相对 URL 会按 baseUri 解析为绝对路径）
         val cleaned = Cleaner(SAFELIST).clean(document)
         cleaned.outputSettings()

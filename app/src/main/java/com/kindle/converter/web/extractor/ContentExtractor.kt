@@ -48,17 +48,51 @@ class ContentExtractor {
         )
     }
 
-    /** 将 data-src/data-original 等懒加载属性还原为 src */
+    /** 将 data-actualsrc / data-src / data-original 等懒加载属性还原为有效 src */
     private fun restoreLazyImages(document: org.jsoup.nodes.Document) {
+        // 1. 提取 noscript 中的真实图片标签（如知乎、WordPress 将高清原图放在 noscript 中）
+        for (noscript in document.select("noscript")) {
+            val innerImgs = noscript.children().filter { it.tagName().equals("img", ignoreCase = true) }
+            for (innerImg in innerImgs) {
+                noscript.before(innerImg)
+            }
+        }
+
+        val lazyAttrs = listOf(
+            "data-actualsrc",    // 知乎核心高清原图属性
+            "data-original",     // 知乎、CSDN、微博
+            "data-src",          // 微信公众号、掘金
+            "data-origin-src",   // 简书
+            "data-lazy-src",     // 淘宝、通用
+            "data-echo",         // Echo.js
+            "data-url",          // 某些新闻站
+            "data-original-src",
+            "data-ks-lazyload"
+        )
+
         for (img in document.select("img")) {
-            if (img.attr("src").isBlank() || img.attr("src").startsWith("data:")) {
-                for (attr in listOf("data-src", "data-original", "data-echo", "data-lazy-src")) {
-                    val lazy = img.attr(attr)
-                    if (lazy.isNotBlank() && !lazy.startsWith("data:")) {
-                        img.attr("src", lazy)
+            val currentSrc = img.attr("src").trim()
+            val isCurrentPlaceholder = currentSrc.isBlank() ||
+                currentSrc.startsWith("data:image/svg", ignoreCase = true) ||
+                currentSrc.contains("placeholder", ignoreCase = true) ||
+                currentSrc.contains("1x1", ignoreCase = true)
+
+            for (attr in lazyAttrs) {
+                var lazy = img.attr(attr).trim()
+                if (lazy.isNotBlank() && !lazy.startsWith("data:image/svg", ignoreCase = true)) {
+                    val abs = img.absUrl(attr).trim()
+                    val candidate = if (abs.isNotBlank()) abs else if (lazy.startsWith("//")) "https:$lazy" else lazy
+                    if (candidate.startsWith("http://") || candidate.startsWith("https://") || candidate.startsWith("data:image/")) {
+                        img.attr("src", candidate)
                         break
                     }
                 }
+            }
+
+            // 协议相对 URL 修正
+            val fixedSrc = img.attr("src").trim()
+            if (fixedSrc.startsWith("//")) {
+                img.attr("src", "https:$fixedSrc")
             }
         }
     }

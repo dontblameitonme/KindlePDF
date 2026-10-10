@@ -90,7 +90,11 @@ fun WebClipperScreen(
                 isExporting = true
                 exportStatusText = "正在进行 6 英寸 Kindle 深度排版…"
                 val tempPdf = File(context.cacheDir, "web_kindle_${System.currentTimeMillis()}.pdf")
-                val fontManager = FontManager(context)
+                val fontManager = converterViewModel.fontManager
+                val selectedId = converterViewModel.uiState.value.selectedFontId
+                if (selectedId != null && fontManager.getCurrentEntry()?.id != selectedId) {
+                    fontManager.selectFont(selectedId)
+                }
                 val params = converterViewModel.uiState.value.params
                 val res = viewModel.exportKindlePdf(params, fontManager, tempPdf)
                 if (res.isSuccess) {

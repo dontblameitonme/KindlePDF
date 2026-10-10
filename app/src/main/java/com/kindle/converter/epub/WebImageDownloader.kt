@@ -46,18 +46,36 @@ class WebImageDownloader(private val userAgent: String) {
     fun downloadedFiles(): Map<String, ByteArray> = fileBytes.toMap()
 
     fun downloadOne(url: String): ByteArray? = try {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", userAgent)
-            .header("Referer", url.substringBefore("://") + "://" +
-                url.substringAfter("://").substringBefore("/"))
-            .build()
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            resp.body?.let { body ->
-                if ((body.contentLength().takeIf { it >= 0 } ?: 0) > MAX_IMAGE_SIZE) return null
-                val data = body.bytes()
-                if (data.size > MAX_IMAGE_SIZE) null else data
+        val cleanUrl = url.trim()
+        if (cleanUrl.startsWith("data:image/", ignoreCase = true)) {
+            val commaIdx = cleanUrl.indexOf(',')
+            if (commaIdx > 0) {
+                val base64Part = cleanUrl.substring(commaIdx + 1)
+                android.util.Base64.decode(base64Part, android.util.Base64.DEFAULT)
+            } else null
+        } else {
+            val targetUrl = if (cleanUrl.startsWith("//")) "https:$cleanUrl" else cleanUrl
+            val host = runCatching { java.net.URL(targetUrl).host.lowercase() }.getOrDefault("")
+            val referer = when {
+                host.contains("zhimg.com") -> "https://www.zhihu.com/"
+                host.contains("qpic.cn") || host.contains("weixin.qq.com") -> "https://mp.weixin.qq.com/"
+                host.contains("csdnimg.cn") || host.contains("csdn.net") -> "https://blog.csdn.net/"
+                host.contains("sinaimg.cn") || host.contains("weibo.com") -> "https://weibo.com/"
+                else -> "https://$host/"
+            }
+            val request = Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", userAgent)
+                .header("Referer", referer)
+                .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                .build()
+            client.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                resp.body?.let { body ->
+                    if ((body.contentLength().takeIf { it >= 0 } ?: 0) > MAX_IMAGE_SIZE) return null
+                    val data = body.bytes()
+                    if (data.size > MAX_IMAGE_SIZE) null else data
+                }
             }
         }
     } catch (_: Exception) {

@@ -100,12 +100,23 @@ class WebViewRenderer(private val context: Context) {
         postOnMain { webView.loadUrl(url) }
 
         try {
-            // 等待页面加载完成
+            // 等待首轮加载完成
             withTimeoutOrNull(LOAD_TIMEOUT_MS) { htmlDeferred.await() }
+
+            // 检测是否存在知乎 WAF 挑战 (zh-zse-ck) 或类似反爬验证
+            // 若存在，轮询等待其在 Chromium 中执行脚本并刷新重载完成
+            repeat(12) {
+                val isChallenge = evalJsSync(webView, "(function(){ return !!document.getElementById('zh-zse-ck'); })()")
+                if (isChallenge == "true") {
+                    delay(1_000)
+                } else {
+                    return@repeat
+                }
+            }
 
             // 自动展开 + 滚动触发懒加载，等待脚本与页面稳定
             evalOnMain(webView, AUTO_EXPAND_JS)
-            delay(2_000)
+            delay(1_500)
             evalOnMain(webView, AUTO_EXPAND_JS)
             delay(SCRIPT_SETTLE_MS)
 
@@ -127,15 +138,30 @@ class WebViewRenderer(private val context: Context) {
         }
     }
 
-    private suspend fun exportDom(webView: WebView): String {
-        val exportDeferred = CompletableDeferred<String>()
-        postOnMain {
-            webView.addJavascriptInterface(ExportBridge(exportDeferred), "W2EBridge")
-            webView.evaluateJavascript(
-                "(function(){return document.documentElement.outerHTML;})()", null
-            )
+    /** 导出渲染后的完整 DOM（通过 evaluateJavascript 直接获取 JSON 反序列化串） */
+    private suspend fun exportDom(webView: WebView): String = suspendCancellableCoroutine { cont ->
+        Handler(Looper.getMainLooper()).post {
+            webView.evaluateJavascript("(function(){ return document.documentElement ? document.documentElement.outerHTML : ''; })()") { rawResult ->
+                if (rawResult == null || rawResult == "null") {
+                    cont.resumeWithException(Exception("DOM 导出为空"))
+                    return@evaluateJavascript
+                }
+                val html = try {
+                    org.json.JSONTokener(rawResult).nextValue() as? String ?: rawResult
+                } catch (_: Exception) {
+                    rawResult
+                }
+                cont.resume(html)
+            }
         }
-        return withTimeout(EXPORT_TIMEOUT_MS) { exportDeferred.await() }
+    }
+
+    private suspend fun evalJsSync(webView: WebView, js: String): String = suspendCancellableCoroutine { cont ->
+        Handler(Looper.getMainLooper()).post {
+            webView.evaluateJavascript(js) { res ->
+                cont.resume(res?.trim('\"') ?: "")
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -145,16 +171,23 @@ class WebViewRenderer(private val context: Context) {
         htmlDeferred: CompletableDeferred<String>,
         desktopUa: Boolean,
     ) {
+        // 允许 Cookie 管理，确保知乎 __zse_ck 等反爬 Cookie 能在挑战完成后被写入
+        val cookieManager = android.webkit.CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            databaseEnabled = true
             userAgentString = if (desktopUa) WebFetcher.DESKTOP_UA else WebFetcher.MOBILE_UA
             loadWithOverviewMode = true
-            useWideViewPort = false
+            useWideViewPort = true
             setSupportZoom(false)
             builtInZoomControls = false
             allowFileAccess = false
             allowContentAccess = false
+            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -169,6 +202,15 @@ class WebViewRenderer(private val context: Context) {
                     view.evaluateJavascript(buildInjectExpression(userscript), null)
                 }
                 if (!htmlDeferred.isCompleted) htmlDeferred.complete("")
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: android.webkit.WebResourceResponse
+            ) {
+                // 关键：知乎等站点的 WAF 挑战返回 HTTP 403，但其实带有挑战 HTML 和 JS 脚本，
+                // 切勿在此抛出异常中断，让 Chromium 继续解析运行该 HTML 中的 challenge 脚本！
             }
 
             override fun onReceivedError(

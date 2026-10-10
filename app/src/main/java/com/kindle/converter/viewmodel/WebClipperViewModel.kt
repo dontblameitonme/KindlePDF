@@ -190,20 +190,33 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    private fun isSiteRequiringWebView(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("zhihu.com") || u.contains("zhuanlan.zhihu") || u.contains("juejin.cn")
+    }
+
     private suspend fun fetchOne(id: Long, uaOverride: UaMode? = null, useWebView: Boolean = false) = withContext(Dispatchers.IO) {
         val item = _uiState.value.links.firstOrNull { it.id == id } ?: return@withContext
         updateStatus(id, LinkStatus.Fetching)
         try {
             val webSettings = container.settingsRepository.settings.first()
-            val article = if (useWebView) {
+            val forceWebView = useWebView || isSiteRequiringWebView(item.url)
+            val article = if (forceWebView) {
                 val script = runCatching { container.scriptRepository.readCurrentScript() }.getOrNull()
                 val html = container.webViewRenderer.render(item.url, script, desktopUa = true)
                 container.contentExtractor.extract(item.url, html)
             } else {
-                val mode = uaOverride ?: webSettings.defaultUa
-                val ua = container.webFetcher.userAgentFor(mode, webSettings.customUserAgent)
-                val html = container.webFetcher.fetchHtml(item.url, ua)
-                container.contentExtractor.extract(item.url, html)
+                try {
+                    val mode = uaOverride ?: webSettings.defaultUa
+                    val ua = container.webFetcher.userAgentFor(mode, webSettings.customUserAgent)
+                    val html = container.webFetcher.fetchHtml(item.url, ua)
+                    container.contentExtractor.extract(item.url, html)
+                } catch (e: Exception) {
+                    // 若普通静态抓取遭遇 403 / 401 或反爬提取失败，自动使用真实 WebView 离线渲染兜底
+                    val script = runCatching { container.scriptRepository.readCurrentScript() }.getOrNull()
+                    val html = container.webViewRenderer.render(item.url, script, desktopUa = true)
+                    container.contentExtractor.extract(item.url, html)
+                }
             }
             updateStatus(id, LinkStatus.Success(article))
         } catch (e: Exception) {
@@ -218,7 +231,9 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /** 将当前成功提取的文章解析为 KindlePDF 的 Document 模型 */
-    suspend fun buildDocument(imageResolver: suspend (String) -> DownloadedImage? = { url -> ImageDownloader.download(url) }): Document {
+    suspend fun buildDocument(imageResolver: suspend (String) -> DownloadedImage? = { url ->
+        ImageDownloader.download(url, refererHint = articles.firstOrNull()?.url ?: "")
+    }): Document {
         val list = articles
         require(list.isNotEmpty()) { "没有提取成功的文章" }
         return WebArticleParser().parse(list, imageResolver)
@@ -258,10 +273,17 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         try {
             val list = articles
             if (list.isEmpty()) return@withContext Result.failure(IllegalStateException("没有提取成功的文章"))
-            val document = buildDocument()
+            val firstUrl = list.first().url
+            val document = buildDocument { url ->
+                ImageDownloader.download(url, refererHint = firstUrl)
+            }
 
             val fontInfo = fontManager.getCurrentFontInfo()
-                ?: return@withContext Result.failure(IllegalStateException("尚未导入字体，请先在文件转换页导入中文字体"))
+                ?: run {
+                    fontManager.autoSelect()
+                    fontManager.getCurrentFontInfo()
+                }
+                ?: return@withContext Result.failure(IllegalStateException("尚未检测到可用字体，请在文件转换页导入中文字体"))
 
             val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
             val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())

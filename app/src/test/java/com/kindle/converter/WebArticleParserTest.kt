@@ -76,4 +76,43 @@ class WebArticleParserTest {
         assertEquals("文章 B", doc.toc[2].title)
         assertEquals(1, doc.toc[2].level)
     }
+
+    @Test
+    fun testNestedDivAndImageExtraction(): Unit = runBlocking {
+        val article = WebArticle(
+            url = "https://www.zhihu.com/question/123/answer/456",
+            title = "知乎回答测试",
+            contentHtml = """
+                <div class="readability-page-1">
+                    <p>这是第一段引言。</p>
+                    <figure>
+                        <img data-actualsrc="https://picx.zhimg.com/v2-test1.jpg" src="data:image/svg+xml;utf8,..." alt="图1"/>
+                    </figure>
+                    <p>这是第二段正文。</p>
+                    <img data-src="https://mmbiz.qpic.cn/v2-test2.png" src="" alt="图2"/>
+                </div>
+            """.trimIndent()
+        )
+
+        val resolvedUrls = mutableListOf<String>()
+        val doc = parser.parse(listOf(article)) { url ->
+            resolvedUrls.add(url)
+            com.kindle.converter.parser.DownloadedImage(
+                bytes = ByteArray(10),
+                format = "jpg",
+                widthPx = 100,
+                heightPx = 100
+            )
+        }
+
+        assertEquals(2, resolvedUrls.size)
+        assertEquals("https://picx.zhimg.com/v2-test1.jpg", resolvedUrls[0])
+        assertEquals("https://mmbiz.qpic.cn/v2-test2.png", resolvedUrls[1])
+
+        val imageBlocks = doc.blocks.filterIsInstance<Block.ImageBlock>()
+        assertEquals(2, imageBlocks.size)
+
+        val paragraphs = doc.blocks.filterIsInstance<Block.Paragraph>()
+        assertEquals(2, paragraphs.size)
+    }
 }
