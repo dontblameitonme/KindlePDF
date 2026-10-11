@@ -11,6 +11,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -18,8 +20,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -45,12 +49,29 @@ fun WebClipperScreen(
     val state by viewModel.uiState.collectAsState()
     val webSettings by viewModel.settings.collectAsState(initial = null)
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
     var showPdfConfirmDialog by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var exportStatusText by remember { mutableStateOf("") }
+
+    val detectedUrlCount = remember(inputText) {
+        if (inputText.isBlank()) 0
+        else {
+            val matches = Regex("""https?://[^\s<>"]+""").findAll(inputText).count()
+            if (matches > 0) matches else inputText.trim().lines().count { it.isNotBlank() }
+        }
+    }
+
+    val onExecuteExtract = {
+        if (inputText.isNotBlank() && !state.isWorking) {
+            viewModel.addUrls(inputText)
+            inputText = ""
+            viewModel.fetchRemaining()
+        }
+    }
 
     // EPUB 导出 SAF Launcher
     val epubSaveLauncher = rememberLauncherForActivityResult(
@@ -130,7 +151,7 @@ fun WebClipperScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
-        // 链接输入与操作卡片
+        // 链接输入与主操作卡片
         ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
@@ -141,16 +162,40 @@ fun WebClipperScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "粘贴网页链接",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "支持批量（空格或换行分隔）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Link,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "粘贴网页链接",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // 剪贴板一键粘贴小胶囊
+                    FilledTonalButton(
+                        onClick = {
+                            val clip = clipboardManager.getText()?.text
+                            if (!clip.isNullOrBlank()) {
+                                inputText = if (inputText.isBlank()) clip else "$inputText\n$clip"
+                                Toast.makeText(context, "已粘贴剪贴板内容", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "剪贴板为空", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("粘贴剪贴板", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -161,17 +206,43 @@ fun WebClipperScreen(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
-                            "支持知乎、微信公众号、CSDN、博客等任何公开网页链接…",
+                            "粘贴知乎、微信公众号、CSDN、新闻或博客链接（多条自动批量解析）…",
                             style = MaterialTheme.typography.bodySmall
                         )
                     },
                     minLines = 2,
                     maxLines = 4,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onExecuteExtract() })
                 )
+
+                Spacer(Modifier.height(10.dp))
+
+                // 【核心视觉聚焦】通栏大号主提取按钮，独占整行，彻底杜绝被挤出屏幕
+                Button(
+                    onClick = onExecuteExtract,
+                    enabled = inputText.isNotBlank() && !state.isWorking,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (detectedUrlCount > 0) "📥 一键添加并提取正文 (${detectedUrlCount} 条链接)" else "📥 一键添加并提取正文",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
                 Spacer(Modifier.height(8.dp))
 
+                // 辅助操作下沉分流
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -181,28 +252,17 @@ fun WebClipperScreen(
                         onClick = {
                             inputText = "https://zhuanlan.zhihu.com/p/65928174\nhttps://mp.weixin.qq.com/s/sample_article"
                         },
-                        contentPadding = PaddingValues(0.dp)
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
                     ) {
-                        Text("＋ 填入测试链接", style = MaterialTheme.typography.labelSmall)
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("填入测试链接", style = MaterialTheme.typography.labelSmall)
                     }
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        OutlinedButton(
-                            onClick = {
-                                val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
-                                activeBrowserUrl = url
-                            },
-                            enabled = !state.isWorking,
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("内置浏览器")
-                        }
-
                         if (inputText.isNotBlank() || state.links.isNotEmpty()) {
                             OutlinedButton(
                                 onClick = {
@@ -210,24 +270,29 @@ fun WebClipperScreen(
                                     viewModel.clearAll()
                                 },
                                 enabled = !state.isWorking,
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
                             ) {
-                                Text("清空")
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("清空", style = MaterialTheme.typography.labelSmall)
                             }
                         }
 
-                        Button(
+                        OutlinedButton(
                             onClick = {
-                                viewModel.addUrls(inputText)
-                                inputText = ""
-                                viewModel.fetchRemaining()
+                                val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
+                                activeBrowserUrl = url
                             },
-                            enabled = inputText.isNotBlank() && !state.isWorking,
-                            shape = RoundedCornerShape(10.dp)
+                            enabled = !state.isWorking,
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.height(32.dp)
                         ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("添加并提取")
+                            Text("内置浏览器", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
@@ -336,7 +401,8 @@ fun WebClipperScreen(
                     .padding(top = 8.dp, bottom = 4.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    val currentFontName = converterViewModel.fontManager.getCurrentEntry()?.name ?: "思源黑体"
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -349,13 +415,13 @@ fun WebClipperScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            "可选择导出形式",
+                            "排版字体: $currentFontName",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -367,16 +433,19 @@ fun WebClipperScreen(
                                 val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
                                 pdfSaveLauncher.launch("$defaultName-Kindle版.pdf")
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
                             enabled = !state.isWorking && !isExporting,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary
                             ),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp)
                         ) {
                             Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("转为 Kindle PDF", maxLines = 1)
+                            Text("转为 Kindle PDF", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
 
                         // 出口 2：标准 EPUB
@@ -385,13 +454,16 @@ fun WebClipperScreen(
                                 val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
                                 epubSaveLauncher.launch("$defaultName.epub")
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
                             enabled = !state.isWorking && !isExporting,
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp)
                         ) {
                             Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("导出为 EPUB", maxLines = 1)
+                            Text("导出为 EPUB", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                     }
                 }

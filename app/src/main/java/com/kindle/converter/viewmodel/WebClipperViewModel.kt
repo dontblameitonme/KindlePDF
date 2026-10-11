@@ -70,6 +70,40 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
     val scriptInfo: Flow<ScriptInfo> = container.scriptRepository.info
     val settings: Flow<WebSettings> = container.settingsRepository.settings
 
+    companion object {
+        private val TRACKING_PARAMS = setOf(
+            "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            "utm_id", "utm_sharing", "chksm", "exportkey", "pass_ticket", "sc_sid",
+            "source_type", "scene", "share_source", "sub_source", "mid", "sn"
+        )
+
+        fun sanitizeUrl(rawUrl: String): String {
+            return try {
+                val uri = java.net.URI(rawUrl)
+                val query = uri.query
+                if (query.isNullOrBlank()) return rawUrl
+
+                val host = uri.host?.lowercase() ?: ""
+                // 知乎问答与专栏直接清除追踪参数，保留纯净文章路径
+                if (host.contains("zhihu.com")) {
+                    val path = uri.path ?: ""
+                    if (path.contains("/answer/") || path.startsWith("/p/")) {
+                        return java.net.URI(uri.scheme, uri.authority, uri.path, null, null).toString()
+                    }
+                }
+
+                val cleanedParams = query.split("&").filter { param ->
+                    val key = param.substringBefore("=").lowercase().trim()
+                    key !in TRACKING_PARAMS
+                }
+                val newQuery = if (cleanedParams.isEmpty()) null else cleanedParams.joinToString("&")
+                java.net.URI(uri.scheme, uri.authority, uri.path, newQuery, uri.fragment).toString()
+            } catch (_: Exception) {
+                rawUrl
+            }
+        }
+    }
+
     private val idGenerator = AtomicLong(0)
 
     val articles: List<WebArticle>
@@ -77,11 +111,12 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             (it.status as? LinkStatus.Success)?.article
         }
 
-    /** 解析并添加粘贴文本中的链接（自动提取与去重，支持混合文本与分享信息） */
+    /** 解析并添加粘贴文本中的链接（自动提取与去重，剥离中文分享杂质与跟踪参数） */
     fun addUrls(raw: String) {
         val urlRegex = Regex("https?://[a-zA-Z0-9\\-._~:/?#\\[\\]@!$&'*+,;=%]+")
         val urls = urlRegex.findAll(raw)
-            .map { it.value.trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '，', '。', '；', '）', '」', '】') }
+            .map { it.value.trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '，', '。', '；', '）', '」', '】', '、', '？', '！', '”', '’') }
+            .map { sanitizeUrl(it) }
             .filter { it.isNotBlank() }
             .distinct()
             .toList()
@@ -335,13 +370,14 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
 
     /** 直接从已有 HTML 字符串（如内置浏览器已渲染的 DOM）提取正文并加入列表 */
     fun addFromHtml(url: String, html: String, fallbackTitle: String? = null) {
+        val cleanUrl = sanitizeUrl(url)
         viewModelScope.launch(Dispatchers.IO) {
             val article = try {
-                container.contentExtractor.extract(url, html)
+                container.contentExtractor.extract(cleanUrl, html)
             } catch (e: Exception) {
                 val title = fallbackTitle?.ifBlank { null } ?: "网页剪藏正文"
                 WebArticle(
-                    url = url,
+                    url = cleanUrl,
                     title = title,
                     contentHtml = html,
                     possiblyTruncated = false
@@ -349,11 +385,11 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             }
             val item = LinkItem(
                 id = idGenerator.incrementAndGet(),
-                url = url,
+                url = cleanUrl,
                 status = LinkStatus.Success(article)
             )
             _uiState.update { state ->
-                val existing = state.links.filterNot { it.url == url }
+                val existing = state.links.filterNot { it.url == cleanUrl }
                 state.copy(
                     links = existing + item,
                     snackbar = "已成功剪藏：《${article.title.take(20)}》"

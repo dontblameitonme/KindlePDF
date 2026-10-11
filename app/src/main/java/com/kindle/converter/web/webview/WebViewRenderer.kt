@@ -207,7 +207,9 @@ class WebViewRenderer(private val context: Context) {
     private suspend fun createWebView(): WebView = suspendCancellableCoroutine { cont ->
         Handler(Looper.getMainLooper()).post {
             try {
-                val wv = WebView(context)
+                val wv = WebView(context).apply {
+                    setBackgroundColor(android.graphics.Color.parseColor("#121212"))
+                }
                 val width = 1080
                 val height = 1920
                 wv.measure(
