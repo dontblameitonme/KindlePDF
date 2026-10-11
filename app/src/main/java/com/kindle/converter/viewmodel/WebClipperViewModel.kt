@@ -213,7 +213,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             val forceWebView = useWebView || webSettings.alwaysUseWebView || isSiteRequiringWebView(item.url, webSettings.directWebViewDomains)
             val article = if (forceWebView) {
                 val script = runCatching { container.scriptRepository.readCurrentScript() }.getOrNull()
-                val html = container.webViewRenderer.render(item.url, script, desktopUa = true)
+                val isDesktop = webSettings.defaultUa == UaMode.DESKTOP
+                val html = container.webViewRenderer.render(item.url, script, desktopUa = isDesktop)
                 container.contentExtractor.extract(item.url, html)
             } else {
                 try {
@@ -224,7 +225,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
                 } catch (e: Exception) {
                     // 若普通静态抓取遭遇 403 / 401 或反爬提取失败，自动使用真实 WebView 离线渲染兜底
                     val script = runCatching { container.scriptRepository.readCurrentScript() }.getOrNull()
-                    val html = container.webViewRenderer.render(item.url, script, desktopUa = true)
+                    val isDesktop = webSettings.defaultUa == UaMode.DESKTOP
+                    val html = container.webViewRenderer.render(item.url, script, desktopUa = isDesktop)
                     container.contentExtractor.extract(item.url, html)
                 }
             }

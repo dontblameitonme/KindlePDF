@@ -3,11 +3,17 @@
 将 `txt / md / docx / epub / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
 基于 Kotlin + Jetpack Compose（Material 3）+ PdfBox-Android 实现的纯本地 Android 应用。
 
-> **最新版本 v1.3.3 亮点**：
-> - 🌐 **Via 风格轻量级内置浏览器（所见即所得一键剪藏）**：内置类似 Via 的轻量级前台 Chromium 浏览器，遇到滑块验证码、扫码登录或复杂前端页面时，可直接在内置浏览器中正常浏览交互；右下角常驻悬浮 **「📥 剪藏此页」** 按钮，点击直接从当前活动的 WebView 中截取已渲染完整的真实 DOM 树，一键加入 Kindle PDF / EPUB 排版队列，支持连续剪藏多篇。
-> - 🛡️ **知乎等强反爬域名直连 WebView 渲染**：在设置中支持配置直连域名列表（默认预置 `zhihu.com, zhuanlan.zhihu.com, juejin.cn`），命中域名自动跳过必然 403 的静态请求，直连后台 Chromium 渲染，支持用户在设置中自定义扩展。
-> - 🌙 **网页全局深色模式（永久保存状态）**：内置浏览器及渲染管线原生支持网页全局深色模式，自动反转页面背景与正文颜色并智能保护插图色彩不变，支持在内置浏览器顶部与设置页一键切换并永久保存。
-> - ⚙️ **后台单实例 Mutex 队列与 1080x1920 虚拟视口**：彻底重构后台 WebView 调度，采用单实例互斥锁严格串行排队，彻底消除批量抓取导致的并发 Chromium 内存暴涨与 OOM 崩溃；显式挂载 1080x1920 虚拟视口并伪造前台可见性，破解防爬 WAF 对 0x0 无头爬虫的特征探查。
+> **最新版本 v1.3.4 亮点**：
+> - 🛡️ **彻底根治知乎 403 WAF 反爬阻断（原生 UA + PoW 重载感知）**：
+>   - **原生 Android UA 校验对齐**：针对知乎（`zhihu.com`、`zhuanlan.zhihu.com`）强制对齐设备真实系统 Native UA（`WebSettings.getDefaultUserAgent`），杜绝伪造 Windows PC UA 在 Android Linux/ARM 硬件环境下的指纹矛盾，破解 WebAssembly 挑战检测与反爬陷阱阻断。
+>   - **纯净 DOM 运行环境**：彻底移除对 `document.visibilityState` 的全局篡改，避免触发反爬探针检测。
+>   - **WebAssembly 挑战自动感知与重载同步**：后台渲染智能轮询监听 `zh-zse-ck` 挑战状态；在 WebAssembly 算力证明生成 `__zse_ck` Cookie 后自动协同刷新，平滑获取 200 OK 完整回答；当遭遇强人工滑块验证时给出明确指引。
+> - 🌐 **内置浏览器全真模拟 Via 体验与 Scheme 拦截**：
+>   - 默认采用手机移动原生 UA 浏览（支持点击标签一键切换 PC 桌面 UA），彻底告别知乎 PC 端强制扫码登录遮罩；
+>   - 智能拦截 `zhihu://`、`intent://` 等第三方唤醒协议，坚决留在当前网页，彻底消除 `ERR_UNKNOWN_URL_SCHEME` 报错；
+>   - 网页加载完成后自动执行 `CookieManager.flush()`，实现浏览器与抓取管线无缝 Cookie 互通。
+> - 🍪 **OkHttp 与 WebView 核心 Cookie 全链路双向同步**：建立 `CookieJar` 桥接，前后台身份凭据与会话 Cookie 全局共享。
+> - 📑 **知乎回答与专栏正文提取器专项兜底**：增强 `ContentExtractor`，内置 `.RichContent-inner`、`.Post-RichText` 等特异性正文提取与问题标题精准识别。
 
 ---
 

@@ -5,11 +5,13 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -57,7 +59,10 @@ fun InAppBrowserDialog(
     var isLoading by remember { mutableStateOf(false) }
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
-    var isDesktopUa by remember { mutableStateOf(true) }
+    var isDesktopUa by remember { mutableStateOf(false) }
+    val defaultNativeUa = remember {
+        runCatching { WebSettings.getDefaultUserAgent(context) }.getOrDefault(WebFetcher.MOBILE_UA)
+    }
     var isDarkMode by remember { mutableStateOf(initialDarkMode) }
     var clippedCount by remember { mutableIntStateOf(0) }
 
@@ -212,7 +217,16 @@ fun InAppBrowserDialog(
                                 Surface(
                                     color = if (isDesktopUa) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                                     shape = RoundedCornerShape(4.dp),
-                                    modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .clickable {
+                                            val nextMode = !isDesktopUa
+                                            isDesktopUa = nextMode
+                                            val targetUa = if (nextMode) WebFetcher.DESKTOP_UA else defaultNativeUa
+                                            webViewRef?.settings?.userAgentString = targetUa
+                                            webViewRef?.reload()
+                                            Toast.makeText(context, if (nextMode) "已切换为电脑 PC UA" else "已切换为移动原生 UA", Toast.LENGTH_SHORT).show()
+                                        }
                                 ) {
                                     Text(
                                         text = if (isDesktopUa) "PC端UA" else "移动UA",
@@ -307,13 +321,22 @@ fun InAppBrowserDialog(
                                 displayZoomControls = false
                                 loadWithOverviewMode = true
                                 useWideViewPort = true
-                                userAgentString = if (isDesktopUa) WebFetcher.DESKTOP_UA else WebFetcher.MOBILE_UA
+                                userAgentString = if (isDesktopUa) WebFetcher.DESKTOP_UA else defaultNativeUa
                                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                             }
 
                             applyDarkModeToWebView(this, isDarkMode)
 
                             webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                    val scheme = request.url?.scheme?.lowercase() ?: ""
+                                    if (scheme == "http" || scheme == "https") {
+                                        return false
+                                    }
+                                    // 拦截第三方客户端唤醒协议（如 zhihu://, intent://），坚决留在 WebView 内
+                                    return true
+                                }
+
                                 override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                                     isLoading = true
                                     currentUrl = url
@@ -331,6 +354,7 @@ fun InAppBrowserDialog(
                                     canGoBack = view.canGoBack()
                                     canGoForward = view.canGoForward()
                                     applyDarkModeToWebView(view, isDarkMode)
+                                    runCatching { CookieManager.getInstance().flush() }
                                 }
                             }
 

@@ -1,8 +1,12 @@
 package com.kindle.converter.web.fetcher
 
+import android.webkit.CookieManager
 import com.kindle.converter.web.settings.UaMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.charset.Charset
@@ -11,7 +15,7 @@ import java.util.concurrent.TimeUnit
 class FetchException(message: String) : Exception(message)
 
 /**
- * 网页下载器：处理编码探测、UA 切换、大小上限。
+ * 网页下载器：处理编码探测、UA 切换、大小上限与 Cookie 双向同步。
  * 默认使用桌面 UA（PC 版网页），可绕过多数移动端"打开 App"截断逻辑。
  */
 class WebFetcher {
@@ -28,7 +32,44 @@ class WebFetcher {
         private const val MAX_BODY_SIZE = 8L * 1024 * 1024
     }
 
+    private val cookieJar = object : CookieJar {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            runCatching {
+                val cm = CookieManager.getInstance()
+                val urlStr = url.toString()
+                for (c in cookies) {
+                    cm.setCookie(urlStr, c.toString())
+                }
+                cm.flush()
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val cm = runCatching { CookieManager.getInstance() }.getOrNull() ?: return emptyList()
+            val cookieStr = runCatching { cm.getCookie(url.toString()) }.getOrNull() ?: return emptyList()
+            val list = mutableListOf<Cookie>()
+            for (part in cookieStr.split(";")) {
+                val trimmed = part.trim()
+                if (trimmed.isEmpty()) continue
+                val eq = trimmed.indexOf('=')
+                if (eq > 0) {
+                    val name = trimmed.substring(0, eq).trim()
+                    val value = trimmed.substring(eq + 1).trim()
+                    runCatching {
+                        Cookie.Builder()
+                            .name(name)
+                            .value(value)
+                            .domain(url.host)
+                            .build()
+                    }.getOrNull()?.let { list.add(it) }
+                }
+            }
+            return list
+        }
+    }
+
     private val client = OkHttpClient.Builder()
+        .cookieJar(cookieJar)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .followRedirects(true)

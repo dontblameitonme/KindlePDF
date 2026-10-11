@@ -27,22 +27,50 @@ class ContentExtractor {
             throw ExtractException("正文解析失败：${e.message ?: "未知错误"}")
         }
 
-        val content = article.content
+        var content = article.content
+        var contentDoc = content?.let { Jsoup.parse(it) }
+        var contentTextLen = contentDoc?.text()?.length ?: 0
+
+        if (content.isNullOrBlank() || contentTextLen < 50) {
+            // 尝试常见正文容器兜底（知乎回答、知乎专栏、微信公众号等）
+            val fallbackSelectors = listOf(
+                ".RichContent-inner",
+                ".Post-RichText",
+                ".RichText",
+                "#js_content",
+                ".article-content",
+                "article",
+                "main"
+            )
+            for (sel in fallbackSelectors) {
+                val candidate = document.select(sel).firstOrNull { it.text().length >= 50 }
+                if (candidate != null) {
+                    content = candidate.outerHtml()
+                    contentDoc = Jsoup.parse(content)
+                    contentTextLen = contentDoc.text().length
+                    break
+                }
+            }
+        }
+
         if (content.isNullOrBlank()) {
             throw ExtractException("未提取到正文内容（页面可能依赖 JS 渲染，可尝试 WebView 渲染）")
         }
 
-        val contentDoc = Jsoup.parse(content)
-        val contentTextLen = contentDoc.text().length
         if (contentTextLen < 50) {
             throw ExtractException("正文内容过短，提取可能失败")
         }
 
         val truncated = OverlayCleaner.isPossiblyTruncated(docTextBefore, contentTextLen)
 
+        // 知乎等页面的标题提取兜底
+        val resolvedTitle = article.title?.takeIf { it.isNotBlank() && !it.contains("有问题，就会有答案") }
+            ?: document.selectFirst("h1.QuestionHeader-title, h1.Post-Title, h1")?.text()?.takeIf { it.isNotBlank() }
+            ?: document.title()
+
         return WebArticle(
             url = url,
-            title = article.title?.takeIf { it.isNotBlank() } ?: document.title(),
+            title = resolvedTitle,
             contentHtml = content,
             possiblyTruncated = truncated,
         )

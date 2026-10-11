@@ -5,11 +5,17 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.kindle.converter.web.extractor.ExtractException
 import com.kindle.converter.web.fetcher.WebFetcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -40,13 +46,9 @@ class WebViewRenderer(private val context: Context) {
         private const val SCRIPT_SETTLE_MS = 1_500L
         private const val EXPORT_TIMEOUT_MS = 5_000L
 
-        /** 页面早期注入的脚本执行框架与前台可见性伪装（破坏无头 0x0 视口反爬探查） */
+        /** 页面早期注入的脚本执行框架（移除任何 visibilityState 属性覆盖，杜绝反爬探针检测） */
         private val HARNESS_JS = """
             (function () {
-              try {
-                Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-                Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-              } catch (e) {}
               if (window.__w2e__) return;
               window.__w2e__ = {
                 run: function (code) {
@@ -91,10 +93,24 @@ class WebViewRenderer(private val context: Context) {
         """.trimIndent()
     }
 
+    /** 根据目标域名和用户偏好计算实际生效的 User-Agent */
+    private fun determineUserAgent(url: String, desktopUa: Boolean): String {
+        val host = runCatching { java.net.URI(url).host?.lowercase() }.getOrNull() ?: ""
+        val defaultNativeUa = runCatching { WebSettings.getDefaultUserAgent(context) }
+            .getOrDefault(WebFetcher.MOBILE_UA)
+
+        // 知乎等强反爬站点：绝对不能使用 Windows NT 桌面 UA，否则其 WebAssembly 挑战检测平台架构不一致必返回 403 陷阱！
+        // 必须使用系统原生真实的 Android UA
+        if (host.contains("zhihu.com")) {
+            return defaultNativeUa
+        }
+        return if (desktopUa) WebFetcher.DESKTOP_UA else defaultNativeUa
+    }
+
     /**
      * 渲染页面并返回最终 DOM。
      * @param userscript 当前启用的用户脚本全文（可为 null）
-     * @param desktopUa 是否使用桌面 UA
+     * @param desktopUa 是否使用桌面 UA（知乎等强反爬站会自动降级为原生移动 UA）
      */
     suspend fun render(
         url: String,
@@ -102,34 +118,84 @@ class WebViewRenderer(private val context: Context) {
         desktopUa: Boolean,
     ): String = renderMutex.withLock {
         withTimeout(TOTAL_TIMEOUT_MS) {
-            val htmlDeferred = CompletableDeferred<String>()
+            val loadDeferred = CompletableDeferred<Unit>()
 
             val webView = createWebView()
-            configure(webView, userscript, htmlDeferred, desktopUa)
+            configure(webView, userscript, loadDeferred, desktopUa, url)
             postOnMain { webView.loadUrl(url) }
 
             try {
-                // 等待首轮加载完成
-                withTimeoutOrNull(LOAD_TIMEOUT_MS) { htmlDeferred.await() }
+                // 1. 等待首轮加载完成（若返回 403 挑战页，Chromium 也会正常解析并触发 onPageFinished）
+                withTimeoutOrNull(LOAD_TIMEOUT_MS) { loadDeferred.await() }
 
-                // 检测是否存在知乎 WAF 挑战 (zh-zse-ck) 或类似反爬验证
-                // 若存在，轮询等待其在 Chromium 中执行脚本并刷新重载完成
-                repeat(12) {
-                    val isChallenge = evalJsSync(webView, "(function(){ return !!document.getElementById('zh-zse-ck'); })()")
-                    if (isChallenge == "true") {
-                        delay(1_000)
-                    } else {
-                        return@repeat
+                // 2. 检测知乎等 WAF 反爬挑战 (zh-zse-ck) 或安全验证状态
+                val startTime = System.currentTimeMillis()
+                var reloadTriggered = false
+
+                while (System.currentTimeMillis() - startTime < 18_000L) {
+                    val status = evalJsSync(
+                        webView,
+                        """
+                        (function() {
+                            if (document.getElementById('zh-zse-ck') || document.querySelector('meta[id="zh-zse-ck"]')) {
+                                return 'challenge';
+                            }
+                            var href = window.location.href || '';
+                            if (href.indexOf('unhuman') >= 0 || href.indexOf('need_login') >= 0) {
+                                return 'unhuman';
+                            }
+                            var title = document.title || '';
+                            if (title.indexOf('安全验证') >= 0 || title.indexOf('验证码') >= 0) {
+                                return 'captcha';
+                            }
+                            var textLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+                            if (textLen > 60) {
+                                return 'ready';
+                            }
+                            return 'loading';
+                        })();
+                        """.trimIndent()
+                    )
+
+                    if (status == "ready") {
+                        break
                     }
+
+                    if (status == "unhuman" || status == "captcha") {
+                        throw ExtractException("知乎触发安全验证，请点击下方「在内置浏览器中打开验证」完成验证并剪藏")
+                    }
+
+                    if (status == "challenge") {
+                        val cookies = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull() ?: ""
+                        if (cookies.contains("__zse_ck") && !reloadTriggered) {
+                            // Cookie 已由 WebAssembly 挑战计算写入，但若页面未自动刷新，主动触发 reload
+                            reloadTriggered = true
+                            postOnMain { webView.reload() }
+                        }
+                    }
+
+                    delay(800)
                 }
 
-                // 自动展开 + 滚动触发懒加载，等待脚本与页面稳定
+                // 检查是否仍处于 challenge 挑战页
+                val finalCheck = evalJsSync(
+                    webView,
+                    "(function(){ return !!(document.getElementById('zh-zse-ck') || document.querySelector('meta[id=\"zh-zse-ck\"]')); })()"
+                )
+                if (finalCheck == "true") {
+                    throw ExtractException("知乎触发安全验证，请点击下方「在内置浏览器中打开验证」完成验证并剪藏")
+                }
+
+                // 3. 自动展开 + 滚动触发懒加载，等待页面稳定
                 evalOnMain(webView, AUTO_EXPAND_JS)
-                delay(1_500)
+                delay(1_200)
                 evalOnMain(webView, AUTO_EXPAND_JS)
                 delay(SCRIPT_SETTLE_MS)
 
-                // 导出渲染后的完整 DOM
+                // 将 Cookie 刷入磁盘以备复用
+                runCatching { CookieManager.getInstance().flush() }
+
+                // 4. 导出渲染后的完整 DOM
                 exportDom(webView)
             } finally {
                 destroyOnMain(webView)
@@ -160,14 +226,18 @@ class WebViewRenderer(private val context: Context) {
     private suspend fun exportDom(webView: WebView): String = suspendCancellableCoroutine { cont ->
         Handler(Looper.getMainLooper()).post {
             webView.evaluateJavascript("(function(){ return document.documentElement ? document.documentElement.outerHTML : ''; })()") { rawResult ->
-                if (rawResult == null || rawResult == "null") {
-                    cont.resumeWithException(Exception("DOM 导出为空"))
+                if (rawResult == null || rawResult == "null" || rawResult.isBlank()) {
+                    cont.resumeWithException(ExtractException("页面内容为空或加载失败"))
                     return@evaluateJavascript
                 }
                 val html = try {
                     org.json.JSONTokener(rawResult).nextValue() as? String ?: rawResult
                 } catch (_: Exception) {
                     rawResult
+                }
+                if (html.length < 50) {
+                    cont.resumeWithException(ExtractException("知乎触发安全验证，请点击下方「在内置浏览器中打开验证」完成验证并剪藏"))
+                    return@evaluateJavascript
                 }
                 cont.resume(html)
             }
@@ -186,46 +256,59 @@ class WebViewRenderer(private val context: Context) {
     private fun configure(
         webView: WebView,
         userscript: String?,
-        htmlDeferred: CompletableDeferred<String>,
+        loadDeferred: CompletableDeferred<Unit>,
         desktopUa: Boolean,
+        targetUrl: String,
     ) {
-        // 允许 Cookie 管理，确保知乎 __zse_ck 等反爬 Cookie 能在挑战完成后被写入
-        val cookieManager = android.webkit.CookieManager.getInstance()
+        val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+        val effectiveUa = determineUserAgent(targetUrl, desktopUa)
 
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            userAgentString = if (desktopUa) WebFetcher.DESKTOP_UA else WebFetcher.MOBILE_UA
+            userAgentString = effectiveUa
             loadWithOverviewMode = true
             useWideViewPort = true
             setSupportZoom(false)
             builtInZoomControls = false
             allowFileAccess = false
             allowContentAccess = false
-            mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean = true
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val scheme = request.url?.scheme?.lowercase() ?: ""
+                if (scheme == "http" || scheme == "https") {
+                    return false
+                }
+                // 拦截第三方客户端唤醒协议（如 zhihu://），避免外部跳转或 ERR_UNKNOWN_URL_SCHEME
+                return true
+            }
+
             override fun onPageStarted(view: WebView, pageUrl: String, favicon: Bitmap?) {
-                // 尽早注入执行框架
                 view.evaluateJavascript(HARNESS_JS, null)
             }
 
             override fun onPageFinished(view: WebView, pageUrl: String) {
-                // document-idle 时机：注入匹配的用户脚本
                 if (userscript != null && UserscriptRunner.matchesUrl(userscript, pageUrl)) {
                     view.evaluateJavascript(buildInjectExpression(userscript), null)
                 }
-                if (!htmlDeferred.isCompleted) htmlDeferred.complete("")
+                if (!loadDeferred.isCompleted) loadDeferred.complete(Unit)
             }
 
             override fun onReceivedHttpError(
                 view: WebView,
                 request: WebResourceRequest,
-                errorResponse: android.webkit.WebResourceResponse
+                errorResponse: WebResourceResponse
             ) {
                 // 关键：知乎等站点的 WAF 挑战返回 HTTP 403，但其实带有挑战 HTML 和 JS 脚本，
                 // 切勿在此抛出异常中断，让 Chromium 继续解析运行该 HTML 中的 challenge 脚本！
@@ -236,9 +319,9 @@ class WebViewRenderer(private val context: Context) {
                 request: WebResourceRequest,
                 error: WebResourceError,
             ) {
-                if (request.isForMainFrame && !htmlDeferred.isCompleted) {
+                if (request.isForMainFrame && !loadDeferred.isCompleted) {
                     val desc = runCatching { error.description }.getOrNull() ?: "网络异常"
-                    htmlDeferred.completeExceptionally(
+                    loadDeferred.completeExceptionally(
                         Exception("页面加载失败（$desc）")
                     )
                 }
