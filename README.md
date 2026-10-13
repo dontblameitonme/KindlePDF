@@ -1,9 +1,19 @@
 # KindlePDF
 
-将 `txt / md / docx / epub / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
+将 `txt / md / docx / epub / mobi / azw / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
 基于 Kotlin + Jetpack Compose（Material 3）+ PdfBox-Android 实现的纯本地 Android 应用。
 
-> **最新版本 v1.3.5 亮点**：
+> **最新版本 v1.3.6 亮点**：
+> - 📚 **全面支持 MOBI 与 AZW / AZW3 (KF8) 格式电子书解析**：
+>   - **纯本地轻量引擎**：零重量级外部依赖，直接按 PalmDB 标准解构文件头与记录列表，自动校验 Record 0 及 `MOBI` 标识；
+>   - **双解压算法原生实现**：完整实现 PalmDOC LZ77 动态滑动窗口反向解压（类型 2）与 HUFF/CDIC 双层哈夫曼树词典递归解压（类型 17480/'DH'），自动剥离末尾变长记录控制字节（`extraRecordFlags`）；
+>   - **多媒体与排版要素无损提取**：支持内嵌 JPEG/PNG/GIF/WebP 图片无损解码并自动重映射，支持 `<mbp:pagebreak>` 强制章节分页（另起新页）、结构化表格解析与粗体/斜体层级；
+>   - **元数据与目录大纲抽取**：深度解析 EXTH 元数据（标题、作者、KF8 边界），智能扫描大纲标题映射为 PDF 书签；
+>   - **Kindle DRM 保护智能探测**：精准识别带数字版权加密的电子书并给予友好提示，确保阅读器排版稳定。
+>
+> ---
+>
+> **版本 v1.3.5 亮点**：
 > - 📱 **网页剪藏主操作流全面升级（操作直觉聚焦，彻底杜绝按钮溢出）**：
 >   - **通栏大号主提取按钮**：输入框正下方独占一整行，采用大圆角高对比度主操作按钮 `📥 一键添加并提取正文 (X 条链接)`，清晰展示解析链接数，彻底解决窄屏手机多按钮挤在同一行导致主按钮被挤出屏幕看不见的致命交互 Bug；
 >   - **内嵌剪贴板快捷粘贴**：输入卡片右上角集成 `📋 粘贴剪贴板` 快捷胶囊，一键填入剪贴板文本；软键盘右下角绑定 `Done` 回车键，按键盘回车直接触发正文提取；
@@ -29,6 +39,7 @@
 <summary><h3>✨ 功能特性（点击展开）</h3></summary>
 
 - **多格式输入支持**：
+  - **Kindle 电子书**（`.mobi` / `.azw` / `.azw3` / `.prc`，纯本地原生解析 PalmDB、PalmDOC LZ77 与 HUFF/CDIC 压缩算法，自动提取 EXTH 元数据、封面插图、章节分页与目录大纲）
   - **网页剪藏（Web Clipper，深度整合 `web-to-epub` 原生能力）**：
     - **三层反截断与反弹窗策略**：攻克知乎、微信公众号、CSDN、掘金、简书等平台的强制下载 App、折叠截断与粘性遮罩弹窗——① 默认桌面端 User-Agent 伪装绕过移动端拦截；② 离线注入 38KB 原生移植版《骚扰拦截》用户脚本（支持自动静默更新与重置）；③ 隐蔽 WebView 离线渲染执行 JavaScript、自动点击「展开阅读全文」并导出完整 DOM。
     - **双通道导出（Kindle PDF / EPUB 3）**：
@@ -97,6 +108,7 @@ app/src/main/java/com/kindle/converter/
 │   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格 + 中文 **粗体** 定界符预处理 + CommonMark AST
 │   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码、<hr> 与 <img> 抽取
 │   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、<table> 结构化提取、相对路径规范化、<img> 与 <svg><image/> 提取
+│   ├── MobiParser.kt                # MOBI / AZW / AZW3 解析：PalmDB 容器结构、PalmDOC LZ77 与 HUFF/CDIC 双解压、图片/章节提取
 │   ├── DocxParser.kt                # DOCX 解析：document.xml 与 _rels 关系映射、<w:tbl> 结构化表格与 DrawingML/VML 内嵌图片提取
 │   ├── PdfParser.kt                 # PDF 重排解析：基于 Y 坐标容差聚合行、智能识别中英文间距、页眉页脚过滤与位图提取
 │   └── ImageDownloader.kt           # 远程图片下载与通用位图尺寸探测

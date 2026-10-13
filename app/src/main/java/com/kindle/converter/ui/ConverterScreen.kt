@@ -128,6 +128,8 @@ fun ConverterScreen(
                                 "text/markdown",
                                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                 "application/epub+zip",
+                                "application/x-mobipocket-ebook",
+                                "application/vnd.amazon.ebook",
                                 "application/pdf",
                                 "text/html",
                                 "*/*"
@@ -402,6 +404,15 @@ private fun FileSelectionSection(
         Icon(Icons.Default.Add, contentDescription = null)
         Spacer(modifier = Modifier.width(8.dp))
         Text("选择文件")
+    }
+    if (files.isEmpty()) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "支持 TXT · Markdown · DOCX · EPUB · MOBI · AZW/AZW3 · HTML · PDF",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
     }
 }
 
