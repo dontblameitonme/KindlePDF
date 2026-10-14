@@ -70,6 +70,10 @@ class MarkdownParser {
         private const val SENTINEL_BOLD_END = '\uE011'
         private const val SENTINEL_BOLD_ITALIC_START = '\uE012'
         private const val SENTINEL_BOLD_ITALIC_END = '\uE013'
+        private const val SENTINEL_STRIKE_START = '\uE014'
+        private const val SENTINEL_STRIKE_END = '\uE015'
+        private const val SENTINEL_HIGHLIGHT_START = '\uE016'
+        private const val SENTINEL_HIGHLIGHT_END = '\uE017'
     }
 
     /**
@@ -99,21 +103,29 @@ class MarkdownParser {
                         blocks.add(tableBlock)
                     }
                 }
+                is MdSegment.DisplayMath -> {
+                    val runs = LatexMathParser.parse(seg.formula)
+                    if (runs.isNotEmpty()) {
+                        blocks.add(Block.MathBlock(latex = seg.formula, runs = runs))
+                    }
+                }
             }
         }
 
         return Document(blocks, toc)
     }
 
-    // ---- GFM 管道表格预切分与解析 ----
+    // ---- GFM 管道表格与数学公式预切分 ----
 
     private sealed class MdSegment {
         data class MarkdownText(val text: String) : MdSegment()
         data class PipeTable(val headerLine: String, val bodyLines: List<String>) : MdSegment()
+        data class DisplayMath(val formula: String) : MdSegment()
     }
 
     /**
-     * 在围栏代码块（``` 或 ~~~）之外扫描并切分出 GFM 管道表格，同时对非代码块普通文本行预注入成对粗体哨兵。
+     * 在围栏代码块（``` 或 ~~~）之外扫描并切分出 GFM 管道表格与 $$ 独立公式块，
+     * 同时对非代码块普通文本行预注入粗体、删除线与高亮哨兵。
      */
     private fun splitSegmentsWithTables(markdown: String): List<MdSegment> {
         val lines = markdown.split('\n')
@@ -149,6 +161,40 @@ class MarkdownParser {
                 continue
             }
 
+            // 在非代码块区域检测 $$ 数学公式块
+            if (!inFence && trimmed.startsWith("$$")) {
+                flushText()
+                val lineTrimmed = trimmed.trim()
+                if (lineTrimmed.length >= 4 && lineTrimmed.endsWith("$$")) {
+                    // 单行独立公式块，如 `$$E = mc^2$$`
+                    val formula = lineTrimmed.substring(2, lineTrimmed.length - 2).trim()
+                    result.add(MdSegment.DisplayMath(formula))
+                    i++
+                    continue
+                } else {
+                    // 多行独立公式块，如 `$$\nE = mc^2\n$$`
+                    val formulaLines = mutableListOf<String>()
+                    val firstLineContent = lineTrimmed.substring(2).trim()
+                    if (firstLineContent.isNotEmpty()) formulaLines.add(firstLineContent)
+                    i++
+                    while (i < lines.size) {
+                        val mLine = lines[i]
+                        val mTrim = mLine.trim()
+                        if (mTrim.endsWith("$$")) {
+                            val lastLineContent = mTrim.substring(0, mTrim.length - 2).trim()
+                            if (lastLineContent.isNotEmpty()) formulaLines.add(lastLineContent)
+                            i++
+                            break
+                        } else {
+                            formulaLines.add(mLine)
+                            i++
+                        }
+                    }
+                    result.add(MdSegment.DisplayMath(formulaLines.joinToString("\n")))
+                    continue
+                }
+            }
+
             // 在非代码块区域检测 GFM 表格（当前行含 '|'，且下一行为表格对齐分隔行）
             if (!inFence && i + 1 < lines.size && isCandidateTableRow(line) && tableDelimiterRegex.matches(lines[i + 1])) {
                 flushText()
@@ -161,6 +207,7 @@ class MarkdownParser {
                     if (rowTrim.isEmpty() ||
                         rowTrim.startsWith("```") ||
                         rowTrim.startsWith("~~~") ||
+                        rowTrim.startsWith("$$") ||
                         rowTrim.startsWith("#") ||
                         rowTrim.startsWith(">") ||
                         !rowTrim.contains('|')
@@ -174,7 +221,7 @@ class MarkdownParser {
                 continue
             }
 
-            val processedLine = if (inFence) line else preprocessCjkStrongDelimiters(line)
+            val processedLine = if (inFence) line else preprocessHighOrderMarkdown(preprocessCjkStrongDelimiters(line))
             textBuf.append(processedLine).append('\n')
             i++
         }
@@ -316,17 +363,79 @@ class MarkdownParser {
     }
 
     /**
-     * 将哨兵字符还原为原始 Markdown 星号（用于缩进代码块等不应解析行内格式的块）。
+     * 将单行 Markdown 文本中的删除线（~~）、高亮（==）、上下标、脚注与常用 HTML 标签预处理为哨兵字符或 Unicode 符号。
+     */
+    private fun preprocessHighOrderMarkdown(line: String): String {
+        var s = line
+
+        // 1) 脚注定义行：`[^1]: 解释` -> `[1] 解释`
+        if (s.trimStart().startsWith("[^") && s.contains("]:")) {
+            s = s.replace(Regex("""^\s*\[\^([^\]]+)\]:\s*""")) { m ->
+                "[${m.groupValues[1]}] "
+            }
+        }
+
+        // 2) 正文行内脚注引用：`正文[^1]` -> `正文[¹]`
+        s = s.replace(Regex("""\[\^([^\]]+)\]""")) { m ->
+            val id = m.groupValues[1]
+            "[${LatexMathParser.toSuperscriptString(id)}]"
+        }
+
+        // 3) 删除线：`~~删除~~` / `<del>删除</del>` / `<s>删除</s>`
+        s = s.replace(Regex("""~~([^~\n\r]+)~~""")) { m ->
+            "$SENTINEL_STRIKE_START${m.groupValues[1]}$SENTINEL_STRIKE_END"
+        }
+        s = s.replace(Regex("""<(del|s)>([\s\S]*?)<\/(del|s)>""", RegexOption.IGNORE_CASE)) { m ->
+            "$SENTINEL_STRIKE_START${m.groupValues[2]}$SENTINEL_STRIKE_END"
+        }
+
+        // 4) 高亮：`==高亮==` / `<mark>高亮</mark>`
+        s = s.replace(Regex("""==([^=\n\r]+)==""")) { m ->
+            "$SENTINEL_HIGHLIGHT_START${m.groupValues[1]}$SENTINEL_HIGHLIGHT_END"
+        }
+        s = s.replace(Regex("""<mark>([\s\S]*?)<\/mark>""", RegexOption.IGNORE_CASE)) { m ->
+            "$SENTINEL_HIGHLIGHT_START${m.groupValues[1]}$SENTINEL_HIGHLIGHT_END"
+        }
+
+        // 5) 上标与下标语法：`H~2~O` -> `H₂O`, `x^2^` -> `x²`
+        s = s.replace(Regex("""(?<!~)~([0-9a-zA-Z+-]+)~(?!~)""")) { m ->
+            LatexMathParser.toSubscriptString(m.groupValues[1])
+        }
+        s = s.replace(Regex("""<sub>([\s\S]*?)<\/sub>""", RegexOption.IGNORE_CASE)) { m ->
+            LatexMathParser.toSubscriptString(m.groupValues[1])
+        }
+        s = s.replace(Regex("""\^([0-9a-zA-Z+-]+)\^""")) { m ->
+            LatexMathParser.toSuperscriptString(m.groupValues[1])
+        }
+        s = s.replace(Regex("""<sup>([\s\S]*?)<\/sup>""", RegexOption.IGNORE_CASE)) { m ->
+            LatexMathParser.toSuperscriptString(m.groupValues[1])
+        }
+
+        // 6) 键盘按键与换行标签：`<kbd>Enter</kbd>` -> `[Enter]`
+        s = s.replace(Regex("""<kbd>([\s\S]*?)<\/kbd>""", RegexOption.IGNORE_CASE)) { m ->
+            "[${m.groupValues[1]}]"
+        }
+        s = s.replace(Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE), "\n")
+
+        return s
+    }
+
+    /**
+     * 将哨兵字符还原为原始 Markdown 星号、波浪号与等号（用于缩进代码块等不应解析行内格式的块）。
      */
     private fun restoreSentinelChars(text: String): String = text
         .replace(SENTINEL_BOLD_START.toString(), "**")
         .replace(SENTINEL_BOLD_END.toString(), "**")
         .replace(SENTINEL_BOLD_ITALIC_START.toString(), "***")
         .replace(SENTINEL_BOLD_ITALIC_END.toString(), "***")
+        .replace(SENTINEL_STRIKE_START.toString(), "~~")
+        .replace(SENTINEL_STRIKE_END.toString(), "~~")
+        .replace(SENTINEL_HIGHLIGHT_START.toString(), "==")
+        .replace(SENTINEL_HIGHLIGHT_END.toString(), "==")
 
     private fun isCandidateTableRow(line: String): Boolean {
         val t = line.trim()
-        if (t.isEmpty() || t.startsWith(">") || t.startsWith("#")) return false
+        if (t.isEmpty() || t.startsWith(">") || t.startsWith("#") || t.startsWith("$$")) return false
         return t.contains('|') && !tableDelimiterRegex.matches(t)
     }
 
@@ -383,11 +492,11 @@ class MarkdownParser {
     }
 
     /**
-     * 解析表格单元格内的 Markdown 行内语法（`**bold**`、`*italic*`、`` `code` ``）。
+     * 解析表格单元格内的 Markdown 行内语法（`**bold**`、`*italic*`、`` `code` ``、`$math$`）。
      */
     private fun parseInlineCellRuns(cellMarkdown: String, defaultBold: Boolean): List<TextRun> {
         if (cellMarkdown.isBlank()) return emptyList()
-        val preprocessed = preprocessCjkStrongDelimiters(cellMarkdown.trim())
+        val preprocessed = preprocessHighOrderMarkdown(preprocessCjkStrongDelimiters(cellMarkdown.trim()))
         val doc = parser.parse(preprocessed)
         val runs = collectTextRuns(extractInlines(doc, parentBold = defaultBold, parentItalic = false))
         return if (runs.isEmpty()) listOf(TextRun(restoreSentinelChars(cellMarkdown.trim()), bold = defaultBold)) else runs
@@ -468,7 +577,17 @@ class MarkdownParser {
                 }
 
                 is FencedCodeBlock -> {
-                    blocks.add(Block.CodeBlock(restoreSentinelChars(child.literal.trimEnd('\n', '\r')), child.info?.trim()))
+                    val lang = child.info?.trim()?.lowercase()
+                    if (lang in setOf("math", "latex", "tex")) {
+                        val mathRuns = LatexMathParser.parse(child.literal.trim())
+                        if (mathRuns.isNotEmpty()) {
+                            blocks.add(Block.MathBlock(child.literal.trim(), mathRuns))
+                        } else {
+                            blocks.add(Block.CodeBlock(restoreSentinelChars(child.literal.trimEnd('\n', '\r')), child.info?.trim()))
+                        }
+                    } else {
+                        blocks.add(Block.CodeBlock(restoreSentinelChars(child.literal.trimEnd('\n', '\r')), child.info?.trim()))
+                    }
                 }
 
                 is IndentedCodeBlock -> {
@@ -530,8 +649,22 @@ class MarkdownParser {
                             blocks.add(Block.CodeBlock(sub.literal.trimEnd('\n', '\r'), sub.info?.trim()))
                         }
                         else -> {
-                            val inlines = extractInlines(sub)
+                            val inlines = extractInlines(sub).toMutableList()
                             if (inlines.isNotEmpty()) {
+                                if (!emittedCurrentItem) {
+                                    val first = inlines.first()
+                                    if (first is InlineItem.Text && first.runs.isNotEmpty()) {
+                                        val firstRun = first.runs.first()
+                                        val text = firstRun.text
+                                        if (text.startsWith("[ ] ")) {
+                                            val newRuns = listOf(firstRun.copy(text = "☐ " + text.substring(4))) + first.runs.drop(1)
+                                            inlines[0] = InlineItem.Text(newRuns)
+                                        } else if (text.startsWith("[x] ", ignoreCase = true)) {
+                                            val newRuns = listOf(firstRun.copy(text = "☑ " + text.substring(4))) + first.runs.drop(1)
+                                            inlines[0] = InlineItem.Text(newRuns)
+                                        }
+                                    }
+                                }
                                 emitInlineBlocks(
                                     inlines = inlines,
                                     blocks = blocks,
@@ -555,7 +688,8 @@ class MarkdownParser {
 
     /**
      * 递归解析 `BlockQuote`（`> ...`）：
-     * 保留引用块内部的多段落、标题、列表项边界，使每段话或每条列表都输出为独立的 [Block.QuoteBlock]。
+     * 保留引用块内部的多段落、标题、列表项边界，使每段话或每条列表都输出为独立的 [Block.QuoteBlock]，
+     * 并自动识别 GitHub 风格警示贴士块（[!NOTE]、[!TIP]、[!IMPORTANT]、[!WARNING]、[!CAUTION]）。
      */
     private suspend fun parseBlockQuote(
         quoteNode: Node,
@@ -569,6 +703,25 @@ class MarkdownParser {
                 is Paragraph, is Heading -> {
                     val runs = collectTextRuns(extractInlines(child)).toMutableList()
                     if (runs.isNotEmpty()) {
+                        val firstText = runs.first().text.trimStart()
+                        val alertInfo = when {
+                            firstText.startsWith("[!NOTE]", ignoreCase = true) -> "ℹ️ 说明：" to 7
+                            firstText.startsWith("[!TIP]", ignoreCase = true) -> "💡 提示：" to 6
+                            firstText.startsWith("[!IMPORTANT]", ignoreCase = true) -> "❗ 重要：" to 12
+                            firstText.startsWith("[!WARNING]", ignoreCase = true) -> "⚠️ 警告：" to 10
+                            firstText.startsWith("[!CAUTION]", ignoreCase = true) -> "🛑 注意：" to 10
+                            else -> null
+                        }
+                        if (alertInfo != null) {
+                            val (label, cutLen) = alertInfo
+                            val remaining = firstText.substring(cutLen).trimStart('\n', '\r', ' ')
+                            if (remaining.isNotEmpty()) {
+                                runs[0] = runs.first().copy(text = remaining)
+                                runs.add(0, TextRun(label, bold = true))
+                            } else {
+                                runs[0] = runs.first().copy(text = label, bold = true)
+                            }
+                        }
                         if (indentPrefix.isNotEmpty()) {
                             runs.add(0, TextRun(indentPrefix, bold = runs.first().bold))
                         }
@@ -662,11 +815,13 @@ class MarkdownParser {
 
     private class SentinelStyleState(
         var bold: Boolean = false,
-        var italic: Boolean = false
+        var italic: Boolean = false,
+        var strikethrough: Boolean = false
     )
 
     /**
      * 递归抽取段落/标题内的内联元素，保留文字与图片的相对顺序。
+     * 支持内嵌数学公式（$formula$ 与 $$formula$$）、删除线与高亮。
      * 注意：遇到子级列表（BulletList / OrderedList）等块级容器时不向内展开，交由外层块级递归处理。
      */
     private fun extractInlines(
@@ -682,7 +837,18 @@ class MarkdownParser {
             if (buf.isNotEmpty()) {
                 val effectiveBold = parentBold || sentinelState.bold
                 val effectiveItalic = parentItalic || sentinelState.italic
-                items.add(InlineItem.Text(listOf(TextRun(buf.toString(), effectiveBold, effectiveItalic))))
+                items.add(
+                    InlineItem.Text(
+                        listOf(
+                            TextRun(
+                                buf.toString(),
+                                effectiveBold,
+                                effectiveItalic,
+                                strikethrough = sentinelState.strikethrough
+                            )
+                        )
+                    )
+                )
                 buf.clear()
             }
         }
@@ -708,8 +874,109 @@ class MarkdownParser {
                         sentinelState.bold = false
                         sentinelState.italic = false
                     }
+                    SENTINEL_STRIKE_START -> {
+                        flush()
+                        sentinelState.strikethrough = true
+                    }
+                    SENTINEL_STRIKE_END -> {
+                        flush()
+                        sentinelState.strikethrough = false
+                    }
+                    SENTINEL_HIGHLIGHT_START -> {
+                        flush()
+                        sentinelState.bold = true
+                    }
+                    SENTINEL_HIGHLIGHT_END -> {
+                        flush()
+                        sentinelState.bold = false
+                    }
                     else -> buf.append(ch)
                 }
+            }
+        }
+
+        fun appendTextWithInlineMath(literal: String) {
+            if (!literal.contains('$')) {
+                appendWithSentinels(literal)
+                return
+            }
+
+            var i = 0
+            val n = literal.length
+            val textBuf = StringBuilder()
+
+            while (i < n) {
+                if (literal[i] == '\\' && i + 1 < n && literal[i + 1] == '$') {
+                    textBuf.append('$')
+                    i += 2
+                    continue
+                }
+
+                // 检测行内 $$...$$
+                if (literal[i] == '$' && i + 1 < n && literal[i + 1] == '$') {
+                    val closeIdx = literal.indexOf("$$", i + 2)
+                    if (closeIdx != -1) {
+                        if (textBuf.isNotEmpty()) {
+                            appendWithSentinels(textBuf.toString())
+                            textBuf.clear()
+                        }
+                        val formula = literal.substring(i + 2, closeIdx).trim()
+                        if (formula.isNotEmpty()) {
+                            flush()
+                            val mathRuns = LatexMathParser.parse(formula)
+                            if (mathRuns.isNotEmpty()) {
+                                items.add(InlineItem.Text(mathRuns))
+                            }
+                        }
+                        i = closeIdx + 2
+                        continue
+                    }
+                }
+
+                // 检测行内 $...$
+                if (literal[i] == '$') {
+                    if (i + 1 < n && !literal[i + 1].isWhitespace() && literal[i + 1] != '$') {
+                        var closeIdx = -1
+                        var j = i + 1
+                        while (j < n) {
+                            if (literal[j] == '\\' && j + 1 < n) {
+                                j += 2
+                                continue
+                            }
+                            if (literal[j] == '$') {
+                                val prevChar = literal[j - 1]
+                                val nextChar = if (j + 1 < n) literal[j + 1] else ' '
+                                if (!prevChar.isWhitespace() && !nextChar.isDigit()) {
+                                    closeIdx = j
+                                    break
+                                }
+                            }
+                            j++
+                        }
+
+                        if (closeIdx != -1) {
+                            if (textBuf.isNotEmpty()) {
+                                appendWithSentinels(textBuf.toString())
+                                textBuf.clear()
+                            }
+                            val formula = literal.substring(i + 1, closeIdx)
+                            flush()
+                            val mathRuns = LatexMathParser.parse(formula)
+                            if (mathRuns.isNotEmpty()) {
+                                items.add(InlineItem.Text(mathRuns))
+                            }
+                            i = closeIdx + 1
+                            continue
+                        }
+                    }
+                }
+
+                textBuf.append(literal[i])
+                i++
+            }
+
+            if (textBuf.isNotEmpty()) {
+                appendWithSentinels(textBuf.toString())
             }
         }
 
@@ -720,7 +987,7 @@ class MarkdownParser {
                     // 块级子节点由外层单独处理，不混入当前段落内联流
                 }
 
-                is Text -> appendWithSentinels(child.literal)
+                is Text -> appendTextWithInlineMath(child.literal)
 
                 is Code -> {
                     flush()
@@ -731,7 +998,8 @@ class MarkdownParser {
                                 TextRun(
                                     cleanCode,
                                     parentBold || sentinelState.bold,
-                                    parentItalic || sentinelState.italic
+                                    parentItalic || sentinelState.italic,
+                                    strikethrough = sentinelState.strikethrough
                                 )
                             )
                         )

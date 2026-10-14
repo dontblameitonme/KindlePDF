@@ -142,6 +142,7 @@ fun PreviewCanvas(
                             paint.textSize = seg.fontSize * finalScale
                             paint.isFakeBoldText = seg.bold
                             paint.isUnderlineText = false
+                            paint.isStrikeThruText = seg.strikethrough
                             paint.color = android.graphics.Color.BLACK
 
                             // v7：JUSTIFY 字符间距。paint.letterSpacing 是相对 EM 倍率。

@@ -3,7 +3,25 @@
 将 `txt / md / docx / epub / mobi / azw / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
 基于 Kotlin + Jetpack Compose（Material 3）+ PdfBox-Android 实现的纯本地 Android 应用。
 
-> **最新版本 v1.3.6 亮点**：
+> **最新版本 v1.3.7 亮点**：
+> - 📐 **全面支持高阶 LaTeX 数学公式（`$$` 独立公式块与 `$` 行内公式）**：
+>   - **原生轻量解析引擎**：零外部厚重依赖，纯本地原生解析 TeX/LaTeX 数学表达式（支持 `$$...$$` 独立块、`$...$` 行内公式及 ```` ```math ```` 围栏代码块）；
+>   - **专业学术级排版**：严格遵循数学排版惯例，单字母拉丁变量（$x, y, z, a, b$）自动呈现优雅斜体，标点、数字、运算符、微积分求和与希腊字母保持端正正体；
+>   - **高清 Unicode 数学映射**：智能解析上下标（$x²$、$a₁$、$e⁻ˣ$）、分式（$\frac{a}{b}$、½）、根号（$\sqrt{x}$、∛）、微积分上下限（$\int_0^\infty$）、求和（$\sum_{i=1}^n$）、矩阵与对齐环境；
+>   - **字形全景安全降级**：内置完善的数学字符 Fallback 降级表，在任意极简系统字体下均能优雅保底，永不乱码丢失。
+> - ✨ **全面支持高阶 Markdown 语法**：
+>   - **GFM 任务列表（Task Lists）**：支持 `- [ ]` 待办与 `- [x]` 已完成，自动渲染为墨水屏极简复选框（`☐` 与 `☑`）；
+>   - **全链路真实删除线（Strikethrough）**：支持 `~~删除线~~`、`<del>` 与 `<s>`，在 PDF 生成与预览画布均绘制清晰穿透线；
+>   - **重点高亮与上下标**：支持 `==高亮==` / `<mark>`、`H~2~O` 下标与 `x^2^` 上标；
+>   - **学术脚注（Footnotes）**：正文 `[^1]` 自动映射为微型上标 `[¹]`，文末定义 `[^1]: 说明` 自动排版为整洁注记；
+>   - **GitHub 风格贴士块（Callouts）**：智能识别 `> [!NOTE]`（ℹ️ 说明）、`> [!TIP]`（💡 提示）、`> [!WARNING]`（⚠️ 警告）等导读框。
+> - 🎯 **导出与提示文案深度精简**：
+>   - **去除冗余「-Kindle版」后缀**：PDF 导出时默认纯净文件名 `文章标题.pdf`，告别冗余尾缀；
+>   - **提示文案统一归一**：处理状态精炼为「正在转换排版…」，界面更直观专业。
+>
+> ---
+>
+> **版本 v1.3.6 亮点**：
 > - 📚 **全面支持 MOBI 与 AZW / AZW3 (KF8) 格式电子书解析**：
 >   - **纯本地轻量引擎**：零重量级外部依赖，直接按 PalmDB 标准解构文件头与记录列表，自动校验 Record 0 及 `MOBI` 标识；
 >   - **双解压算法原生实现**：完整实现 PalmDOC LZ77 动态滑动窗口反向解压（类型 2）与 HUFF/CDIC 双层哈夫曼树词典递归解压（类型 17480/'DH'），自动剥离末尾变长记录控制字节（`extraRecordFlags`）；
@@ -106,6 +124,7 @@ app/src/main/java/com/kindle/converter/
 │   ├── WebArticleParser.kt          # 网页文章 -> Document 桥接器（大纲书签、PageBreak 章节另起新页、表格/代码映射）
 │   ├── TxtParser.kt                 # TXT 解析：编码探测、CRLF 归一化、单/双换行分段、段首全角空格清理与章节大纲提取
 │   ├── MarkdownParser.kt            # Markdown 解析：GFM 管道表格 + 中文 **粗体** 定界符预处理 + CommonMark AST
+│   ├── LatexMathParser.kt           # LaTeX 数学公式解析：LaTeX 语法树、Unicode 上下标/分式/根号/希腊字母与斜体变量映射
 │   ├── HtmlParser.kt                # HTML 解析：轻量级块级切分、实体解码、<hr> 与 <img> 抽取
 │   ├── EpubParser.kt                # EPUB 解析：OPF/Spine/TOC 解析、<table> 结构化提取、相对路径规范化、<img> 与 <svg><image/> 提取
 │   ├── MobiParser.kt                # MOBI / AZW / AZW3 解析：PalmDB 容器结构、PalmDOC LZ77 与 HUFF/CDIC 双解压、图片/章节提取

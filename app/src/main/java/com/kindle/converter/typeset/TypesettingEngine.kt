@@ -112,7 +112,8 @@ class LineBreaker(private val measurer: TextMeasurer) {
         val x: Float,
         val fontSize: Float,
         val bold: Boolean,
-        val italic: Boolean
+        val italic: Boolean,
+        val strikethrough: Boolean = false
     )
 
     data class Line(
@@ -136,7 +137,8 @@ class LineBreaker(private val measurer: TextMeasurer) {
         val bold: Boolean,
         val italic: Boolean,
         val fontSize: Float,
-        val width: Float
+        val width: Float,
+        val strikethrough: Boolean = false
     )
 
     /**
@@ -167,7 +169,7 @@ class LineBreaker(private val measurer: TextMeasurer) {
             for (c in run.text) {
                 if (c == '\r') continue
                 val w = if (c == '\n') 0f else measurer.measureChar(c, effectiveSize, run.bold)
-                chars.add(CharInfo(c, run.bold, run.italic, effectiveSize, w))
+                chars.add(CharInfo(c, run.bold, run.italic, effectiveSize, w, run.strikethrough))
             }
         }
         if (chars.isEmpty()) return emptyList()
@@ -461,26 +463,28 @@ class LineBreaker(private val measurer: TextMeasurer) {
         var segBold = placed[0].info.bold
         var segItalic = placed[0].info.italic
         var segFontSize = placed[0].info.fontSize
+        var segStrikethrough = placed[0].info.strikethrough
         var expectedNextX = placed[0].x
 
         for (p in placed) {
             val info = p.info
             val hasGap = kotlin.math.abs(p.x - expectedNextX) > 0.05f
-            val styleChanged = info.bold != segBold || info.italic != segItalic || info.fontSize != segFontSize
+            val styleChanged = info.bold != segBold || info.italic != segItalic || info.fontSize != segFontSize || info.strikethrough != segStrikethrough
 
             if ((hasGap || styleChanged) && sb.isNotEmpty()) {
-                segs.add(LineSegment(sb.toString(), segStartX, segFontSize, segBold, segItalic))
+                segs.add(LineSegment(sb.toString(), segStartX, segFontSize, segBold, segItalic, segStrikethrough))
                 sb.clear()
                 segStartX = p.x
                 segBold = info.bold
                 segItalic = info.italic
                 segFontSize = info.fontSize
+                segStrikethrough = info.strikethrough
             }
             sb.append(info.char)
             expectedNextX = p.x + info.width
         }
         if (sb.isNotEmpty()) {
-            segs.add(LineSegment(sb.toString(), segStartX, segFontSize, segBold, segItalic))
+            segs.add(LineSegment(sb.toString(), segStartX, segFontSize, segBold, segItalic, segStrikethrough))
         }
         return segs
     }
@@ -637,7 +641,8 @@ class Paginator {
                                         fontSize = seg.fontSize,
                                         bold = seg.bold,
                                         italic = seg.italic,
-                                        charSpacing = 0f
+                                        charSpacing = 0f,
+                                        strikethrough = seg.strikethrough
                                     )
                                 }
                                 if (segs.isNotEmpty()) {
@@ -999,7 +1004,8 @@ class Paginator {
                         fontSize = seg.fontSize,
                         bold = seg.bold,
                         italic = seg.italic,
-                        charSpacing = charSpacing
+                        charSpacing = charSpacing,
+                        strikethrough = seg.strikethrough
                     )
                     glyphsBefore += seg.text.length
                     positioned
@@ -1159,6 +1165,30 @@ class TypesettingEngine(
                         paragraphFirstLineIndent
                     )
                     blockLinesList.add(Paginator.BlockLines(lines, sourceBlockIndex = blockIndex))
+                }
+
+                is Block.MathBlock -> {
+                    // 独立数学公式块：居中对齐，字号略微放大 1.05x，上下各留出呼吸空间
+                    val mathFontSize = params.fontSize * 1.05f
+                    val mathRuns = block.runs.map { run ->
+                        if (run.fontSize == null) run.copy(fontSize = mathFontSize) else run
+                    }
+                    val lines = lineBreaker.breakLines(
+                        mathRuns, availableWidth, mathFontSize,
+                        firstLineIndent = 0f
+                    )
+                    val centeredLines = lines.map { ln ->
+                        val shift = ((availableWidth - ln.width) / 2f).coerceAtLeast(0f)
+                        val shiftedSegs = ln.segments.map { s -> s.copy(x = s.x + shift) }
+                        ln.copy(segments = shiftedSegs, indent = shift, isHardBreak = true)
+                    }
+                    blockLinesList.add(
+                        Paginator.BlockLines(
+                            centeredLines,
+                            customLineHeight = lineHeight * 1.25f,
+                            sourceBlockIndex = blockIndex
+                        )
+                    )
                 }
 
                 is Block.Heading -> {

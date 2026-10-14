@@ -30,6 +30,12 @@ sealed class Block {
         val format: String = "png"
     ) : Block()
     /**
+     * 数学公式块（对应 Markdown `$$...$$` 独立公式块）。
+     * @param latex 原始 LaTeX 公式代码
+     * @param runs 格式化解析后的富文本 Run 列表（含变量斜体、数学符号与上下标）
+     */
+    data class MathBlock(val latex: String, val runs: List<TextRun>) : Block()
+    /**
      * 结构化数据表格块（由 Markdown 管道表格、HTML/EPUB `<table>` 或 DOCX `<w:tbl>` 解析生成）。
      * @param headers 表头行各列单元格的富文本列表（可为空列表表示无独立表头）
      * @param rows 数据行列表，每行包含各列单元格的富文本（List<TextRun>）
@@ -53,7 +59,8 @@ data class TextRun(
     val bold: Boolean = false,
     val italic: Boolean = false,
     val fontSize: Float? = null,
-    val color: Int? = null
+    val color: Int? = null,
+    val strikethrough: Boolean = false
 )
 
 data class TocEntry(
@@ -130,7 +137,8 @@ data class PositionedSegment(
      * 物理意义：相比把 extra 直接加到 segment.x，这种实现不会让"立 那地力"那种
      * 中间空格变成大空隙——而是把字符间距均匀增大/缩小。
      */
-    val charSpacing: Float = 0f
+    val charSpacing: Float = 0f,
+    val strikethrough: Boolean = false
 )
 
 // ============================================================

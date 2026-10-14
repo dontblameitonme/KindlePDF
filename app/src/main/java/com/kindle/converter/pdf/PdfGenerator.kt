@@ -147,6 +147,16 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                             if (charSpacingTc != 0f) {
                                 contentStream.setCharacterSpacing(0f)
                             }
+                            if (seg.strikethrough) {
+                                try {
+                                    val stringWidth = font.getStringWidth(safeText) / 1000f * seg.fontSize + charSpacingTc * safeText.length
+                                    val strikeY = baselineY + seg.fontSize * 0.28f
+                                    contentStream.setLineWidth((seg.fontSize * 0.05f).coerceIn(0.6f, 1.2f))
+                                    contentStream.moveTo(seg.x, strikeY)
+                                    contentStream.lineTo(seg.x + stringWidth, strikeY)
+                                    contentStream.stroke()
+                                } catch (_: Exception) {}
+                            }
                         } catch (e: Exception) {
                             try {
                                 if (needSyntheticBold) {

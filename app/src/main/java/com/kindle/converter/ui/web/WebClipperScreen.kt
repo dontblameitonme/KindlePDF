@@ -111,7 +111,7 @@ fun WebClipperScreen(
         if (uri != null) {
             scope.launch {
                 isExporting = true
-                exportStatusText = "正在进行 6 英寸 Kindle 深度排版…"
+                exportStatusText = "正在转换排版…"
                 val tempPdf = File(context.cacheDir, "web_kindle_${System.currentTimeMillis()}.pdf")
                 val fontManager = converterViewModel.fontManager
                 val selectedId = converterViewModel.uiState.value.selectedFontId
@@ -431,7 +431,7 @@ fun WebClipperScreen(
                         Button(
                             onClick = {
                                 val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
-                                pdfSaveLauncher.launch("$defaultName-Kindle版.pdf")
+                                pdfSaveLauncher.launch("$defaultName.pdf")
                             },
                             modifier = Modifier
                                 .weight(1f)
