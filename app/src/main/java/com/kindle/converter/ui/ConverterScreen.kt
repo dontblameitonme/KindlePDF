@@ -643,6 +643,28 @@ private fun ParameterPanel(
         }
     }
 
+    Spacer(modifier = Modifier.height(8.dp))
+
+    // 不显示正文前的目录（开关）
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Switch(
+            checked = params.hideFrontToc,
+            onCheckedChange = { onParamsChange(params.copy(hideFrontToc = it)) }
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("不显示正文前的目录", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "自动识别并跳过前置印刷目录，直接从正文排版（保留 PDF 侧边大纲书签）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
     Spacer(modifier = Modifier.height(12.dp))
 
     SliderParam("字号", params.fontSize, 6f..24f, 17, "pt") { onParamsChange(params.copy(fontSize = it)) }

@@ -2,6 +2,7 @@ package com.kindle.converter.parser
 
 import com.kindle.converter.data.Document
 import com.kindle.converter.data.ParseContext
+import com.kindle.converter.data.stripFrontMatterToc
 
 /**
  * Dispatcher: routes to the correct parser based on file extension.
@@ -15,7 +16,7 @@ object DocumentParser {
         imageResolver: suspend (String) -> DownloadedImage? = { null }
     ): Document {
         val ext = fileName.substringAfterLast('.', "").lowercase()
-        return when (ext) {
+        val rawDoc = when (ext) {
             "txt" -> TxtParser().parse(bytes)
             "md", "markdown", "mdown" -> {
                 val text = detectEncoding(bytes)
@@ -40,6 +41,7 @@ object DocumentParser {
                 } else TxtParser().parse(bytes)
             }
         }
+        return if (ctx.hideFrontToc) rawDoc.stripFrontMatterToc() else rawDoc
     }
 
     private fun looksLikePdf(bytes: ByteArray): Boolean {

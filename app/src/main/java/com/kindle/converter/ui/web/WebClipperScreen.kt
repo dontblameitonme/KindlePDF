@@ -421,6 +421,24 @@ fun WebClipperScreen(
                         )
                     }
 
+                    val params = converterViewModel.uiState.value.params
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "不显示正文前的目录",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Switch(
+                            checked = params.hideFrontToc,
+                            onCheckedChange = { checked ->
+                                converterViewModel.updateParams(params.copy(hideFrontToc = checked))
+                            }
+                        )
+                    }
+
                     Spacer(Modifier.height(10.dp))
 
                     Row(

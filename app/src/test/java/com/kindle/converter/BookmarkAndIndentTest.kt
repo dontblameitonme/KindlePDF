@@ -22,9 +22,12 @@ import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOut
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import com.kindle.converter.data.stripFrontMatterToc
 import java.io.File
 
 class BookmarkAndIndentTest {
@@ -68,6 +71,102 @@ class BookmarkAndIndentTest {
             listOf("营养学指南", "全书完整目录（全景导图）", "第一篇：底层逻辑篇", "第 1 章：为什么吃", "第二篇：实操进阶篇"),
             tocTitles
         )
+    }
+
+    @Test
+    fun testHideFrontMatterTocOption(): Unit = runBlocking {
+        val md = """
+            # 营养学指南
+            
+            ## 全书完整目录（全景导图）
+            
+            ### 第一篇：底层逻辑篇
+            - 1.1 为什么吃
+            - 1.2 能量代谢
+            
+            ### 第二篇：实操进阶篇
+            - 2.1 减脂原则
+            
+            ---
+            
+            # 第一篇：底层逻辑篇
+            
+            正文内容深入探讨营养学底层逻辑...
+            
+            ## 第 1 章：为什么吃
+            
+            深入探讨...
+            
+            # 第二篇：实操进阶篇
+            
+            第二篇正文详细讲解营养实操方法...
+        """.trimIndent()
+
+        val parser = MarkdownParser()
+        val doc = parser.parse(md)
+
+        // 未开启 hideFrontToc 时，保留前置目录
+        assertEquals(
+            listOf("营养学指南", "全书完整目录（全景导图）", "第一篇：底层逻辑篇", "第 1 章：为什么吃", "第二篇：实操进阶篇"),
+            doc.toc.map { it.title }
+        )
+        assertTrue(doc.blocks.any { it is Block.Heading && it.runs.any { r -> r.text.contains("全书完整目录") } })
+
+        // 开启 hideFrontToc 时，剔除前置目录，同时保留真实章节的大纲书签并正确重映射 blockIndex
+        val stripped = doc.stripFrontMatterToc()
+        val strippedTitles = stripped.toc.map { it.title }
+        assertEquals(
+            listOf("营养学指南", "第一篇：底层逻辑篇", "第 1 章：为什么吃", "第二篇：实操进阶篇"),
+            strippedTitles
+        )
+        // 验证前置目录已被从 blocks 中移除
+        assertFalse(stripped.blocks.any { it is Block.Heading && it.runs.any { r -> r.text.contains("全书完整目录") } })
+        assertFalse(stripped.blocks.any { it is Block.ListItem && it.runs.any { r -> r.text.contains("1.1 为什么吃") } })
+
+        // 验证第一篇的 blockIndex 正确对齐到 stripped.blocks
+        val part1Entry = stripped.toc.first { it.title == "第一篇：底层逻辑篇" }
+        val targetBlock = stripped.blocks[part1Entry.blockIndex]
+        assertTrue(targetBlock is Block.Heading)
+        assertEquals("第一篇：底层逻辑篇", (targetBlock as Block.Heading).runs.joinToString("") { it.text })
+    }
+
+    @Test
+    fun testTxtHideFrontToc(): Unit = runBlocking {
+        val txt = """
+            目录
+            第一章 初入江湖
+            第二章 风波又起
+            尾声
+
+            第一章 初入江湖
+            天色微明，少年背着行囊踏上了漫长的江湖之路。
+
+            第二章 风波又起
+            茶馆里有人窃窃私语，讨论着昨夜在城外发生的大事。
+
+            尾声
+            风雨过后，一切终于归于平静。
+        """.trimIndent()
+
+        val parser = com.kindle.converter.parser.TxtParser()
+        val doc = parser.parse(txt.toByteArray(Charsets.UTF_8))
+
+        // 验证未剔除前，目录包含在 blocks 中
+        assertTrue(doc.blocks.any { it is Block.Heading && it.runs.any { r -> r.text == "目录" } })
+
+        // 开启 hideFrontToc 剔除前置目录
+        val stripped = doc.stripFrontMatterToc()
+        assertFalse(stripped.blocks.any { it is Block.Heading && it.runs.any { r -> r.text == "目录" } })
+
+        val chap1Entry = stripped.toc.firstOrNull { it.title == "第一章 初入江湖" }
+        assertNotNull(chap1Entry)
+        val targetBlock = stripped.blocks[chap1Entry!!.blockIndex]
+        assertTrue(targetBlock is Block.Heading)
+        assertEquals("第一章 初入江湖", (targetBlock as Block.Heading).runs.joinToString("") { it.text })
+        // 正文紧随其后
+        val nextBlock = stripped.blocks[chap1Entry.blockIndex + 1]
+        assertTrue(nextBlock is Block.Paragraph)
+        assertTrue((nextBlock as Block.Paragraph).runs.any { it.text.contains("天色微明") })
     }
 
     @Test

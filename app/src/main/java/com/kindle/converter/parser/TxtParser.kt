@@ -15,6 +15,11 @@ class TxtParser {
         RegexOption.IGNORE_CASE
     )
 
+    private val frontTocRegex = Regex(
+        """^(?:全书)?(?:完整)?(?:导读)?(?:本文)?(?:文章)?(?:章节)?(?:目录|Contents|TABLE OF CONTENTS|Table of Contents|Navigation|导航)(?:[（(].*[）)])?[:：]?\s*$""",
+        RegexOption.IGNORE_CASE
+    )
+
     /**
      * 解析纯文本（TXT）文件为结构化段落与章节大纲列表。
      *
@@ -45,7 +50,7 @@ class TxtParser {
         val toc = mutableListOf<TocEntry>()
 
         for (cleaned in rawLines) {
-            if (cleaned.length <= 40 && chapterRegex.matches(cleaned)) {
+            if (cleaned.length <= 40 && (chapterRegex.matches(cleaned) || frontTocRegex.matches(cleaned))) {
                 blocks.add(Block.Heading(1, listOf(TextRun(cleaned, bold = true))))
                 toc.add(TocEntry(cleaned, 1, blocks.lastIndex))
             } else {

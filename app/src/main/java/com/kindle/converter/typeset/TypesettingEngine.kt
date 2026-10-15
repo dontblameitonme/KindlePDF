@@ -10,6 +10,7 @@ import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TextRun
 import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.data.VerticalAlignment
+import com.kindle.converter.data.stripFrontMatterToc
 import com.tom_roush.pdfbox.pdmodel.font.PDFont
 
 // ============================================================
@@ -1144,6 +1145,7 @@ class TypesettingEngine(
         typesetWithDetails(document, params).pages
 
     fun typesetWithDetails(document: Document, params: TypesettingParams): TypesetResult {
+        val docToTypeset = if (params.hideFrontToc) document.stripFrontMatterToc() else document
         val availableWidth = params.availableWidth
         val lineHeight = params.lineHeightInPoints
         val blockLinesList = mutableListOf<Paginator.BlockLines>()
@@ -1157,7 +1159,7 @@ class TypesettingEngine(
             TextAlignment.CENTER, TextAlignment.RIGHT -> 0f
         }
 
-        for ((blockIndex, block) in document.blocks.withIndex()) {
+        for ((blockIndex, block) in docToTypeset.blocks.withIndex()) {
             when (block) {
                 is Block.Paragraph -> {
                     val lines = lineBreaker.breakLines(

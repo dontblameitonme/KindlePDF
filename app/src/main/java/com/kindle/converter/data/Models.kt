@@ -79,7 +79,8 @@ data class TocEntry(
  */
 data class ParseContext(
     val stripHeadersFooters: Boolean = true,
-    val imageWrapMode: ImageWrapMode = ImageWrapMode.TOP_AND_BOTTOM
+    val imageWrapMode: ImageWrapMode = ImageWrapMode.TOP_AND_BOTTOM,
+    val hideFrontToc: Boolean = false
 )
 
 // ============================================================
@@ -186,6 +187,12 @@ data class TypesettingParams(
      * 末行 y > 92% 页高 或纯数字 = 页码丢弃。仅对 PDF 输入有效；docx/epub 没有页眉页脚问题。
      */
     val stripHeadersFooters: Boolean = true,
+    /**
+     * 是否在排版时隐藏正文前的印刷目录（默认关）。
+     * 开启后自动识别并跳过文档开头自带的前置印刷目录，直接从正文第一章开始排版。
+     * PDF 电子大纲书签树仍将完整保留，方便在阅读器菜单中快速跳转。
+     */
+    val hideFrontToc: Boolean = false,
     val boldHeadings: Boolean = true,
     val headingScale: Float = 1.4f,
     val enableOrphanControl: Boolean = true,
@@ -264,3 +271,150 @@ enum class ImageWrapMode(val displayName: String) {
         val ALL: List<ImageWrapMode> = values().toList()
     }
 }
+
+// ============================================================
+// 前置印刷目录（Front-matter TOC）识别与剔除管线
+// ============================================================
+
+val FRONT_TOC_REGEX = Regex(
+    """^(?:全书)?(?:完整)?(?:导读)?(?:本文)?(?:文章)?(?:章节)?(?:目录|Contents|TABLE OF CONTENTS|Table of Contents|Navigation|导航)(?:[（(].*[）)])?[:：]?\s*$""",
+    RegexOption.IGNORE_CASE
+)
+
+val CHAPTER_TITLE_REGEX = Regex(
+    """^(?:第\s*[0-9一二三四五六七八九十百千万零]+\s*[章回卷节篇部集话]|Chapter\s+\d+|[序前]言|引子|尾声|后记|番外\S*|Part\s+\d+|Volume\s+\d+|Book\s+\d+|Section\s+\d+).*""",
+    RegexOption.IGNORE_CASE
+)
+
+/**
+ * 智能识别并剔除文档开头自带的印刷目录区间，返回排版正文用的干净 Document。
+ * 1. 扫描文档前部（前 50 个 Block），识别以"目录"、"Contents"等开头的标题或短段落作为目录起始点；
+ * 2. 依次跳过该目录所包含的列表项、章节列表段落、表格、子级标题与分隔线；
+ * 3. 当遇到真正正文第一章（带实质性长段落、或层级回归、或重复出现的第一章标题）时截止；
+ * 4. 自动移除目录末尾的连带分页符（Block.PageBreak），保证第一章正文直接从第 1 页开始；
+ * 5. 重新映射与修正 Document.toc 中各大纲项的物理 blockIndex，彻底消除印刷目录冗余，同时保留电子大纲书签。
+ */
+fun Document.stripFrontMatterToc(): Document {
+    if (blocks.isEmpty()) return this
+
+    var tocStartIndex = -1
+    var tocStartLevel = 1
+
+    // 仅在文档前部（前 50 个 block 内）扫描前置目录起始
+    val searchLimit = minOf(blocks.size, 50)
+    for (i in 0 until searchLimit) {
+        val block = blocks[i]
+        val text = when (block) {
+            is Block.Heading -> block.runs.joinToString("") { it.text }.trim()
+            is Block.Paragraph -> {
+                val t = block.runs.joinToString("") { it.text }.trim()
+                if (t.length <= 20 && FRONT_TOC_REGEX.matches(t)) t else null
+            }
+            else -> null
+        }
+        if (text != null && FRONT_TOC_REGEX.matches(text)) {
+            tocStartIndex = i
+            tocStartLevel = if (block is Block.Heading) block.level else 1
+            break
+        }
+    }
+
+    if (tocStartIndex == -1) {
+        return this
+    }
+
+    // 从 tocStartIndex + 1 开始寻找前置目录结束位置（即正文第一章起始）
+    var tocEndIndex = -1
+    val seenTocTitles = mutableSetOf<String>()
+
+    for (i in (tocStartIndex + 1) until blocks.size) {
+        val block = blocks[i]
+        when (block) {
+            is Block.Heading -> {
+                val title = block.runs.joinToString("") { it.text }.trim()
+                if (!FRONT_TOC_REGEX.matches(title)) {
+                    val nextBlock = blocks.getOrNull(i + 1)
+                    val isFollowedByParagraph = nextBlock is Block.Paragraph && nextBlock.runs.any { it.text.trim().length >= 8 }
+                    val isDuplicateChapter = title in seenTocTitles
+
+                    // 遇到层级 <= 目录层级且带有正文段落，或者遇到在目录列表中出现过的章节名重复出现且带正文
+                    if ((block.level <= tocStartLevel && isFollowedByParagraph) ||
+                        (isDuplicateChapter && isFollowedByParagraph) ||
+                        (CHAPTER_TITLE_REGEX.matches(title) && isFollowedByParagraph)
+                    ) {
+                        tocEndIndex = i
+                        break
+                    } else {
+                        // 依然在目录内部的子标题（如 ### 第一篇），记录其标题名
+                        seenTocTitles.add(title)
+                    }
+                }
+            }
+            is Block.ListItem -> {
+                val itemText = block.runs.joinToString("") { it.text }.trim()
+                if (itemText.isNotEmpty()) seenTocTitles.add(itemText)
+            }
+            is Block.Paragraph -> {
+                val pText = block.runs.joinToString("") { it.text }.trim()
+                // 如果段落是长正文段落（>= 60 字且不含目录常见的省略号），说明已进入实质正文
+                if (pText.length >= 60 && !pText.contains("...") && !pText.contains("……")) {
+                    tocEndIndex = i
+                    break
+                }
+                if (pText.isNotEmpty()) seenTocTitles.add(pText)
+            }
+            is Block.PageBreak -> {
+                // 如果在目录后面遇到了分页符，且分页符后紧跟着非目录的 Heading，该分页符是目录结束点
+                val nextBlock = blocks.getOrNull(i + 1)
+                if (nextBlock is Block.Heading) {
+                    val nextTitle = nextBlock.runs.joinToString("") { it.text }.trim()
+                    if (!FRONT_TOC_REGEX.matches(nextTitle)) {
+                        tocEndIndex = i + 1 // 将 PageBreak 一并移除
+                        break
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    if (tocEndIndex == -1 || tocEndIndex <= tocStartIndex) {
+        return this
+    }
+
+    // 顺带移除待删除区间末尾紧跟的连续 PageBreak 或 HorizontalRule，避免开头留白页
+    var actualStart = tocStartIndex
+    var actualEnd = tocEndIndex
+    while (actualEnd < blocks.size && (blocks[actualEnd] is Block.PageBreak || blocks[actualEnd] is Block.HorizontalRule)) {
+        actualEnd++
+    }
+
+    val removedCount = actualEnd - actualStart
+    if (removedCount <= 0) return this
+
+    val newBlocks = ArrayList<Block>(blocks.size - removedCount)
+    for (i in 0 until actualStart) {
+        newBlocks.add(blocks[i])
+    }
+    for (i in actualEnd until blocks.size) {
+        newBlocks.add(blocks[i])
+    }
+
+    // 重新映射与修正 Document.toc 中的大纲项，剔除指向已删除前置目录本身的条目
+    val newToc = mutableListOf<TocEntry>()
+    for (entry in toc) {
+        val titleTrim = entry.title.trim()
+        if (entry.blockIndex in actualStart until actualEnd || FRONT_TOC_REGEX.matches(titleTrim)) {
+            continue
+        }
+        val newBlockIndex = if (entry.blockIndex >= actualEnd) {
+            entry.blockIndex - removedCount
+        } else {
+            entry.blockIndex
+        }
+        newToc.add(entry.copy(blockIndex = newBlockIndex.coerceAtLeast(0)))
+    }
+
+    return copy(blocks = newBlocks, toc = newToc)
+}
+

@@ -319,7 +319,8 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                 val bytes = readUriBytes(fileItem.uri)
                 val ctx = ParseContext(
                     stripHeadersFooters = state.params.stripHeadersFooters,
-                    imageWrapMode = state.params.imageWrapMode
+                    imageWrapMode = state.params.imageWrapMode,
+                    hideFrontToc = state.params.hideFrontToc
                 )
                 val document = DocumentParser.parse(fileItem.name, bytes, ctx, imageResolver)
                 cachedDocument = document
@@ -490,7 +491,8 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             val app = getApplication<Application>()
             val ctx = ParseContext(
                 stripHeadersFooters = params.stripHeadersFooters,
-                imageWrapMode = params.imageWrapMode
+                imageWrapMode = params.imageWrapMode,
+                hideFrontToc = params.hideFrontToc
             )
 
             for ((index, fileItem) in state.files.withIndex()) {

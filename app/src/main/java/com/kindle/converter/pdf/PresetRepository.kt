@@ -134,6 +134,7 @@ class PresetRepository(private val context: Context) {
         put("verticalAlignment", p.verticalAlignment.name)
         put("imageWrapMode", p.imageWrapMode.name)
         put("stripHeadersFooters", p.stripHeadersFooters)
+        put("hideFrontToc", p.hideFrontToc)
         put("boldHeadings", p.boldHeadings)
         put("headingScale", p.headingScale)
         put("enableOrphanControl", p.enableOrphanControl)
@@ -164,6 +165,7 @@ class PresetRepository(private val context: Context) {
             verticalAlignment = va,
             imageWrapMode = iw,
             stripHeadersFooters = o.optBoolean("stripHeadersFooters", true),
+            hideFrontToc = o.optBoolean("hideFrontToc", false),
             boldHeadings = o.optBoolean("boldHeadings", true),
             headingScale = o.optDouble("headingScale", 1.4).toFloat(),
             enableOrphanControl = o.optBoolean("enableOrphanControl", true),

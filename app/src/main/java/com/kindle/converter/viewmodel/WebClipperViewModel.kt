@@ -7,6 +7,7 @@ import com.kindle.converter.KindleConverterApp
 import com.kindle.converter.data.Document
 import com.kindle.converter.data.PageLayout
 import com.kindle.converter.data.TypesettingParams
+import com.kindle.converter.data.stripFrontMatterToc
 import com.kindle.converter.epub.BookMeta
 import com.kindle.converter.epub.EpubBuilder
 import com.kindle.converter.parser.DownloadedImage
@@ -321,9 +322,10 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             val list = articles
             if (list.isEmpty()) return@withContext Result.failure(IllegalStateException("没有提取成功的文章"))
             val firstUrl = list.first().url
-            val document = buildDocument { url ->
+            val rawDocument = buildDocument { url ->
                 ImageDownloader.download(url, refererHint = firstUrl)
             }
+            val document = if (params.hideFrontToc) rawDocument.stripFrontMatterToc() else rawDocument
 
             val fontInfo = fontManager.getCurrentFontInfo()
                 ?: run {
