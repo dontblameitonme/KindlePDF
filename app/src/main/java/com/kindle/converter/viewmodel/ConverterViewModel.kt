@@ -338,9 +338,14 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                         statusMessage = "预览：${pages.size} 页"
                     )
                 }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
+                val msg = if (t is OutOfMemoryError) {
+                    "文件过大导致内存不足 (OutOfMemory)，建议精简或分卷重试"
+                } else {
+                    t.message ?: "未知错误"
+                }
                 _uiState.update {
-                    it.copy(isTypesetting = false, errorMessage = "预览失败：${e.message}")
+                    it.copy(isTypesetting = false, errorMessage = "预览失败：$msg")
                 }
             }
         }
@@ -381,9 +386,14 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                         statusMessage = "示例预览：${pages.size} 页（当前参数）"
                     )
                 }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
+                val msg = if (t is OutOfMemoryError) {
+                    "内存不足 (OutOfMemory)"
+                } else {
+                    t.message ?: "未知错误"
+                }
                 _uiState.update {
-                    it.copy(isTypesetting = false, errorMessage = "示例预览失败：${e.message}")
+                    it.copy(isTypesetting = false, errorMessage = "示例预览失败：$msg")
                 }
             }
         }
@@ -564,9 +574,14 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                             )
                         )
                     }
-                } catch (e: Exception) {
+                } catch (t: Throwable) {
+                    val msg = if (t is OutOfMemoryError) {
+                        "文件过大导致内存不足 (OutOfMemory)，建议分卷或精简图片后重试"
+                    } else {
+                        t.message ?: "未知错误"
+                    }
                     results.add(
-                        ConversionResult(fileName = fileItem.name, success = false, error = e.message)
+                        ConversionResult(fileName = fileItem.name, success = false, error = msg)
                     )
                 }
 
@@ -673,8 +688,12 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun readUriBytes(uri: Uri): ByteArray {
-        return getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: ByteArray(0)
+        return try {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: ByteArray(0)
+        } catch (_: Throwable) {
+            ByteArray(0)
+        }
     }
 
     private fun getFileName(uri: Uri): String {

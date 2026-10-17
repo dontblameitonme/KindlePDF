@@ -51,11 +51,9 @@ class EpubParser {
 
         try {
             val entries = unzipAll(bytes)
-            // 构建小写键映射，兼容部分 Windows 制作工具生成的 EPUB 内部路径大小写不一致问题
-            val entriesLower = entries.entries.associate { (k, v) -> k.lowercase() to v }
 
             // 1. 通过 META-INF/container.xml 定位 content.opf
-            val containerBytes = findEntryBytes(entries, entriesLower, "META-INF/container.xml")
+            val containerBytes = findEntryBytes(entries, "META-INF/container.xml")
                 ?: return Document(blocks)
             val containerDoc = parseXml(containerBytes.toString(Charsets.UTF_8))
             val rootfileEl = getElementsByTagNameLocal(containerDoc, "rootfile").firstOrNull()
@@ -65,7 +63,7 @@ class EpubParser {
             val opfDir = opfPath.substringBeforeLast('/', "")
 
             // 2. 解析 content.opf
-            val opfBytes = findEntryBytes(entries, entriesLower, opfPath) ?: return Document(blocks)
+            val opfBytes = findEntryBytes(entries, opfPath) ?: return Document(blocks)
             val opfDoc = parseXml(opfBytes.toString(Charsets.UTF_8))
 
             // 提取元数据（书名、作者）
@@ -90,14 +88,14 @@ class EpubParser {
             }
 
             // 3. 解析目录元数据（NCX 或 EPUB 3 nav）
-            val rawTocItems = parseRawToc(entries, entriesLower, opfDir, manifest)
+            val rawTocItems = parseRawToc(entries, opfDir, manifest)
 
             val fileStartBlockMap = mutableMapOf<String, Int>()
             val anchorBlockMap = mutableMapOf<String, Int>()
 
             // 4. 按 spine 顺序逐章解析正文与插图
             for (chapterPath in chapterPaths) {
-                val chapterBytes = findEntryBytes(entries, entriesLower, chapterPath) ?: continue
+                val chapterBytes = findEntryBytes(entries, chapterPath) ?: continue
                 val chapterXml = chapterBytes.toString(Charsets.UTF_8)
                 val chapterDoc = try {
                     parseXml(chapterXml)
@@ -122,8 +120,7 @@ class EpubParser {
                     anchorBlockMap = anchorBlockMap,
                     chapterPath = chapterPath,
                     chapterDir = chapterDir,
-                    entries = entries,
-                    entriesLower = entriesLower
+                    entries = entries
                 )
             }
 
@@ -160,8 +157,9 @@ class EpubParser {
                     }
                 }
             }
-        } catch (e: Exception) {
-            blocks.add(Block.Paragraph(listOf(TextRun("[EPUB parse error: ${e.message}]"))))
+        } catch (t: Throwable) {
+            val msg = if (t is OutOfMemoryError) "文件过大导致内存不足 (OutOfMemory)" else (t.message ?: "未知错误")
+            blocks.add(Block.Paragraph(listOf(TextRun("[EPUB parse error: $msg]"))))
         }
 
         return Document(blocks, toc, title, author)
@@ -176,7 +174,6 @@ class EpubParser {
 
     private fun parseRawToc(
         entries: Map<String, ByteArray>,
-        entriesLower: Map<String, ByteArray>,
         opfDir: String,
         manifest: Map<String, String>
     ): List<RawTocItem> {
@@ -185,7 +182,7 @@ class EpubParser {
         // 优先尝试 EPUB 2 的 .ncx 目录
         val ncxPath = manifest.values.find { it.endsWith(".ncx", ignoreCase = true) }
         if (ncxPath != null) {
-            val ncxXml = findEntryBytes(entries, entriesLower, ncxPath)?.toString(Charsets.UTF_8)
+            val ncxXml = findEntryBytes(entries, ncxPath)?.toString(Charsets.UTF_8)
             val ncxDoc = if (ncxXml != null) runCatching { parseXml(ncxXml) }.getOrNull() else null
             if (ncxDoc != null) {
                 val ncxDir = ncxPath.substringBeforeLast('/', "")
@@ -210,7 +207,7 @@ class EpubParser {
             it.endsWith("nav.xhtml", ignoreCase = true) || it.endsWith("nav.html", ignoreCase = true)
         }
         if (navPath != null) {
-            val navXml = findEntryBytes(entries, entriesLower, navPath)?.toString(Charsets.UTF_8)
+            val navXml = findEntryBytes(entries, navPath)?.toString(Charsets.UTF_8)
             val navDoc = if (navXml != null) runCatching { parseXml(navXml) }.getOrNull() else null
             val navEl = if (navDoc != null) getElementsByTagNameLocal(navDoc, "nav").firstOrNull() else null
             if (navEl != null) {
@@ -282,8 +279,7 @@ class EpubParser {
         anchorBlockMap: MutableMap<String, Int>,
         chapterPath: String,
         chapterDir: String,
-        entries: Map<String, ByteArray>,
-        entriesLower: Map<String, ByteArray>
+        entries: Map<String, ByteArray>
     ) {
         var child: Node? = node.firstChild
         while (child != null) {
@@ -300,7 +296,6 @@ class EpubParser {
                             blocks = blocks,
                             chapterDir = chapterDir,
                             entries = entries,
-                            entriesLower = entriesLower,
                             blockBuilder = { runs -> Block.Heading(level, runs) }
                         )
                     }
@@ -312,14 +307,13 @@ class EpubParser {
                             blocks = blocks,
                             chapterDir = chapterDir,
                             entries = entries,
-                            entriesLower = entriesLower,
                             blockBuilder = { runs -> Block.Paragraph(runs) }
                         )
                     }
 
                     "blockquote" -> {
                         if (hasDirectBlockChildren(child)) {
-                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries, entriesLower)
+                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries)
                         } else {
                             val items = collectInlineItems(child)
                             emitInlineItems(
@@ -327,7 +321,6 @@ class EpubParser {
                                 blocks = blocks,
                                 chapterDir = chapterDir,
                                 entries = entries,
-                                entriesLower = entriesLower,
                                 blockBuilder = { runs -> Block.QuoteBlock(runs) }
                             )
                         }
@@ -350,7 +343,6 @@ class EpubParser {
                                     blocks = blocks,
                                     chapterDir = chapterDir,
                                     entries = entries,
-                                    entriesLower = entriesLower,
                                     blockBuilder = { runs -> Block.ListItem(0, ordered = false, runs = runs) }
                                 )
                             }
@@ -371,7 +363,6 @@ class EpubParser {
                                     blocks = blocks,
                                     chapterDir = chapterDir,
                                     entries = entries,
-                                    entriesLower = entriesLower,
                                     blockBuilder = { runs ->
                                         Block.ListItem(0, ordered = true, orderIndex = currentIdx, runs = runs)
                                     }
@@ -383,13 +374,13 @@ class EpubParser {
                     }
 
                     "img", "image" -> {
-                        extractImageBlock(child, chapterDir, entries, entriesLower)?.let { blocks.add(it) }
+                        extractImageBlock(child, chapterDir, entries)?.let { blocks.add(it) }
                     }
 
                     "svg" -> {
                         // EPUB 封面经常采用 <svg><image xlink:href="..."/></svg> 包装位图
                         for (imgEl in getElementsByTagNameLocal(child, "image")) {
-                            extractImageBlock(imgEl, chapterDir, entries, entriesLower)?.let { blocks.add(it) }
+                            extractImageBlock(imgEl, chapterDir, entries)?.let { blocks.add(it) }
                         }
                     }
 
@@ -418,7 +409,7 @@ class EpubParser {
                                     when (item) {
                                         is InlineItem.Text -> textRuns.add(item.run)
                                         is InlineItem.ImageNode -> {
-                                            extractImageBlock(item.element, chapterDir, entries, entriesLower)
+                                            extractImageBlock(item.element, chapterDir, entries)
                                                 ?.let { tableImages.add(it) }
                                         }
                                     }
@@ -446,7 +437,7 @@ class EpubParser {
 
                     "div", "section", "article", "main", "header", "footer", "figure", "aside", "center" -> {
                         if (hasDirectBlockChildren(child)) {
-                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries, entriesLower)
+                            parseHtmlContent(child, blocks, anchorBlockMap, chapterPath, chapterDir, entries)
                         } else {
                             val items = collectInlineItems(child)
                             emitInlineItems(
@@ -454,7 +445,6 @@ class EpubParser {
                                 blocks = blocks,
                                 chapterDir = chapterDir,
                                 entries = entries,
-                                entriesLower = entriesLower,
                                 blockBuilder = { runs -> Block.Paragraph(runs) }
                             )
                         }
@@ -467,7 +457,6 @@ class EpubParser {
                             blocks = blocks,
                             chapterDir = chapterDir,
                             entries = entries,
-                            entriesLower = entriesLower,
                             blockBuilder = { runs -> Block.Paragraph(runs) }
                         )
                     }
@@ -608,7 +597,6 @@ class EpubParser {
         blocks: MutableList<Block>,
         chapterDir: String,
         entries: Map<String, ByteArray>,
-        entriesLower: Map<String, ByteArray>,
         blockBuilder: (List<TextRun>) -> Block
     ) {
         val currentRuns = mutableListOf<TextRun>()
@@ -628,7 +616,7 @@ class EpubParser {
                 is InlineItem.Text -> currentRuns.add(item.run)
                 is InlineItem.ImageNode -> {
                     flushRuns()
-                    extractImageBlock(item.element, chapterDir, entries, entriesLower)?.let {
+                    extractImageBlock(item.element, chapterDir, entries)?.let {
                         blocks.add(it)
                     }
                 }
@@ -672,13 +660,12 @@ class EpubParser {
     private fun extractImageBlock(
         imgElement: Element,
         chapterDir: String,
-        entries: Map<String, ByteArray>,
-        entriesLower: Map<String, ByteArray>
+        entries: Map<String, ByteArray>
     ): Block.ImageBlock? {
         val rawSrc = getImageSourceAttr(imgElement) ?: return null
         if (rawSrc.isBlank() || rawSrc.startsWith("data:", ignoreCase = true)) return null
         val resolvedPath = resolvePath(chapterDir, rawSrc)
-        val imgBytes = findEntryBytes(entries, entriesLower, resolvedPath) ?: return null
+        val imgBytes = findEntryBytes(entries, resolvedPath) ?: return null
         return ImageDownloader.decodeImageBlock(imgBytes, resolvedPath)
     }
 
@@ -706,7 +693,7 @@ class EpubParser {
     // --- Utilities ---
 
     private fun unzipAll(bytes: ByteArray): Map<String, ByteArray> {
-        val entries = mutableMapOf<String, ByteArray>()
+        val entries = java.util.TreeMap<String, ByteArray>(java.lang.String.CASE_INSENSITIVE_ORDER)
         val zip = ZipInputStream(ByteArrayInputStream(bytes))
         var entry = zip.nextEntry
         while (entry != null) {
@@ -754,22 +741,19 @@ class EpubParser {
 
     /**
      * 在解压出的 ZIP 字典中查找目标文件：
-     * 优先精确匹配，其次大小写不敏感匹配，最后按文件名后缀兜底匹配（应对部分非标准 EPUB 路径层级偏差）。
+     * 优先直接在大小写不敏感字典中匹配，最后按文件名后缀兜底匹配（应对部分非标准 EPUB 路径层级偏差）。
      */
     private fun findEntryBytes(
         entries: Map<String, ByteArray>,
-        entriesLower: Map<String, ByteArray>,
         path: String
     ): ByteArray? {
         val normalized = path.replace('\\', '/').trimStart('/')
         entries[normalized]?.let { return it }
-        val lower = normalized.lowercase()
-        entriesLower[lower]?.let { return it }
 
-        val fileName = lower.substringAfterLast('/')
+        val fileName = normalized.substringAfterLast('/')
         if (fileName.isNotEmpty()) {
-            val suffixMatch = entriesLower.entries.firstOrNull { (k, _) ->
-                k == fileName || k.endsWith("/$fileName")
+            val suffixMatch = entries.entries.firstOrNull { (k, _) ->
+                k.equals(fileName, ignoreCase = true) || k.endsWith("/$fileName", ignoreCase = true)
             }
             if (suffixMatch != null) return suffixMatch.value
         }

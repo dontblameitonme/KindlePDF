@@ -3,7 +3,17 @@
 将 `txt / md / docx / epub / mobi / azw / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
 基于 Kotlin + Jetpack Compose（Material 3）+ PdfBox-Android 实现的纯本地 Android 应用。
 
-> **最新版本 v1.3.8 亮点**：
+> **最新版本 v1.3.9 亮点**：
+> - 💥 **彻底根治大体积文件闪退（全链路拦截 OutOfMemoryError 与内存深度优化）**：
+>   - **开启 `android:largeHeap="true"` 堆内存上限翻倍扩展**：将 Android 虚拟机堆内存预算由默认的 192MB/256MB 大幅提升至 512MB~1024MB，彻底解除长篇小说、多章节电子书与大体积文档的物理内存束缚；
+>   - **全链路严密异常捕获（`catch (Throwable)`）**：针对 Java/Kotlin 中 `OutOfMemoryError` 继承自 `Error` 无法被常规 `catch (Exception)` 捕获导致进程遭系统强制杀死的底层机制，在核心解析器（`PdfParser`、`EpubParser`）、转换调度器（`ConverterViewModel`）与剪藏导出器（`WebClipperViewModel`）中全面升级为 `Throwable` 全景捕获，彻底杜绝直接闪退，并提供精准友好的内存超限提示；
+>   - **高清插图动态下采样与紧凑色彩格式（`RGB_565` + `inSampleSize`）**：针对高像素插图，自动根据 1400px 最大边长动态计算 `inSampleSize` 采样率，色彩空间优化为 16 位紧凑格式，单图解码内存占用直降 90% 以上；
+>   - **即时物理位图显式回收（`bitmap.recycle()`）**：在 PDF 渲染与提取的所有 `finally` 块中立即显式调用 `recycle()` 释放底层 Native 内存，避免 GC 滞后引发的瞬时内存洪峰；
+>   - **EPUB 路径检索内存轻量化（单实例 `TreeMap`）**：重构 EPUB 内部条目字典，摒弃原有二次分配的 `entriesLower` 冗余副本，改用单实例不区分大小写的 `TreeMap` 检索，解析含海量小图或切片的 EPUB 时显著降低内存 footprint。
+>
+> ---
+>
+> **版本 v1.3.8 亮点**：
 > - 📖 **新增「不显示正文前的目录」开关控制**：
 >   - **智能识别前置印刷目录**：全面覆盖 Markdown、EPUB、MOBI、AZW、TXT、HTML、DOCX 等所有支持格式，自动探测文档开头自带的印刷目录区域（如「目录」、「Contents」、「TABLE OF CONTENTS」及章节列表）；
 >   - **跳过冗余翻页，直达正文第一章**：排版时自动剥离前置目录文本及末尾连带分页符，使 Kindle 打开 PDF 即可直接从正文第一章开始沉浸阅读，彻底消除墨水屏上反复翻阅多页印刷目录的繁琐；

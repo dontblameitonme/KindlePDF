@@ -45,8 +45,9 @@ class PdfParser {
 
         val doc = try {
             PDDocument.load(bytes)
-        } catch (e: Exception) {
-            blocks.add(Block.Paragraph(listOf(TextRun("[PDF 解析失败：${e.message ?: "未知错误"}]"))))
+        } catch (t: Throwable) {
+            val msg = if (t is OutOfMemoryError) "文件过大导致内存不足 (OutOfMemory)" else (t.message ?: "未知错误")
+            blocks.add(Block.Paragraph(listOf(TextRun("[PDF 解析失败：$msg]"))))
             return Document(blocks, toc, title, author)
         }
 
@@ -113,12 +114,13 @@ class PdfParser {
                 }
                 traverseOutline(outline, 0)
             }
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             if (blocks.isEmpty()) {
-                blocks.add(Block.Paragraph(listOf(TextRun("[PDF 读取失败：${e.message ?: "未知错误"}]"))))
+                val msg = if (t is OutOfMemoryError) "文件过大导致内存不足 (OutOfMemory)" else (t.message ?: "未知错误")
+                blocks.add(Block.Paragraph(listOf(TextRun("[PDF 读取失败：$msg]"))))
             }
         } finally {
-            try { doc.close() } catch (_: Exception) {}
+            try { doc.close() } catch (_: Throwable) {}
         }
 
         return Document(blocks, toc, title, author)
@@ -310,6 +312,7 @@ class PdfParser {
             val images = mutableListOf<PDImageXObject>()
             collectImages(page.resources, images, seen)
             for (img in images) {
+                var bitmap: Bitmap? = null
                 try {
                     val w = img.width
                     val h = img.height
@@ -322,18 +325,20 @@ class PdfParser {
                     // 此处仅过滤 < 16x16 的装饰性碎图/追踪像素。
                     if (w < 16 || h < 16) continue
 
-                    val bitmap = img.image ?: continue
+                    bitmap = img.image ?: continue
                     val bytes = ByteArrayOutputStream().use { baos ->
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 88, baos)
                         baos.toByteArray()
                     }
                     if (bytes.isEmpty()) continue
                     out.add(Block.ImageBlock(bytes, w, h, format = "jpg"))
-                } catch (_: Exception) {
-                    // 单图失败不影响后续
+                } catch (_: Throwable) {
+                    // 单图失败或内存紧张不影响后续
+                } finally {
+                    try { bitmap?.recycle() } catch (_: Throwable) {}
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
         return out
     }
 

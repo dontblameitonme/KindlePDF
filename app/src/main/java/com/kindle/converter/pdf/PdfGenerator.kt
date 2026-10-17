@@ -18,7 +18,9 @@ import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject
 import com.tom_roush.pdfbox.pdmodel.graphics.state.RenderingMode
 import com.kindle.converter.typeset.ChineseTypography
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -86,11 +88,11 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
 
             document.save(outputFile.absolutePath)
             return true
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (t: Throwable) {
+            t.printStackTrace()
             return false
         } finally {
-            try { document.close() } catch (e: Exception) {}
+            try { document.close() } catch (_: Throwable) {}
         }
     }
 
@@ -189,7 +191,7 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
     /**
      * 在 ContentStream 上绘制一张图片。
      * Y 轴翻转：layout y 顶距 → PDF y（距页底）。
-     * 单图失败不影响整页。
+     * 单图失败不影响整页，严格捕获 Throwable 杜绝 OOM 闪退。
      */
     private fun drawImage(
         contentStream: PDPageContentStream,
@@ -201,27 +203,38 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
             val pdImage = createImage(document, element.bytes, element.format) ?: return
             val pdfY = pageHeight - element.y - element.height
             contentStream.drawImage(pdImage, element.x, pdfY, element.width, element.height)
-        } catch (e: Exception) {
-            // 图片解码失败等异常，单张图片失败不影响整页
+        } catch (_: Throwable) {
+            // 单张图片解码失败或内存溢出，静默跳过，绝不崩溃
         }
     }
 
     /**
      * 根据格式构造 PDImageXObject。空 / 失败返回 null。
-     * - JPEG/JPG：走 JPEGFactory.createFromByteArray
-     * - 其他（PNG/未知）：先用 BitmapFactory 解码为 Android Bitmap，
-     *   再走 LosslessFactory.createFromImage。LosslessFactory 不支持
-     *   字节直构，所以必须经 Bitmap。
+     * - JPEG/JPG：通常走 JPEGFactory.createFromByteArray；超过 2MB 或长宽 > 1600px 时自动下采样重压缩；
+     * - 其他（PNG/未知）：根据 6 英寸 Kindle 物理显示需要（最大边 1400px）动态计算 inSampleSize，
+     *   以 RGB_565 模式高效解码（减半内存），并在 LosslessFactory 载入后强制调用 bitmap.recycle() 归还 Native 内存。
      */
     private fun createImage(document: PDDocument, bytes: ByteArray, format: String): PDImageXObject? {
         if (bytes.isEmpty()) return null
         val fmt = format.lowercase()
         return try {
             when (fmt) {
-                "jpg", "jpeg" ->
-                    JPEGFactory.createFromByteArray(document, bytes)
+                "jpg", "jpeg" -> {
+                    if (bytes.size > 2 * 1024 * 1024) {
+                        decodeDownsampledJpeg(document, bytes) ?: JPEGFactory.createFromByteArray(document, bytes)
+                    } else {
+                        JPEGFactory.createFromByteArray(document, bytes)
+                    }
+                }
                 else -> {
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                    val sampleSize = calculateInSampleSize(opts, maxDim = 1400)
+                    val decodeOpts = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.RGB_565
+                    }
+                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
                     try {
                         LosslessFactory.createFromImage(document, bitmap)
                     } finally {
@@ -229,14 +242,61 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (_: Throwable) {
             try {
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+                // OOM 保底：大幅下采样后重试
+                val decodeOpts = BitmapFactory.Options().apply {
+                    inSampleSize = 4
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
                 try {
                     LosslessFactory.createFromImage(document, bitmap)
-                } finally { bitmap.recycle() }
-            } catch (_: Exception) { null }
+                } finally {
+                    bitmap.recycle()
+                }
+            } catch (_: Throwable) {
+                null
+            }
         }
+    }
+
+    private fun decodeDownsampledJpeg(document: PDDocument, bytes: ByteArray): PDImageXObject? {
+        return try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (opts.outWidth <= 1600 && opts.outHeight <= 1600) return null
+            val sampleSize = calculateInSampleSize(opts, maxDim = 1400)
+            if (sampleSize <= 1) return null
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
+            try {
+                val baos = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+                JPEGFactory.createFromByteArray(document, baos.toByteArray())
+            } finally {
+                bitmap.recycle()
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun calculateInSampleSize(options: BitmapFactory.Options, maxDim: Int): Int {
+        val h = options.outHeight
+        val w = options.outWidth
+        var inSampleSize = 1
+        if (h > maxDim || w > maxDim) {
+            val halfH = h / 2
+            val halfW = w / 2
+            while ((halfH / inSampleSize) >= maxDim && (halfW / inSampleSize) >= maxDim) {
+                inSampleSize *= 2
+            }
+        }
+        return inSampleSize
     }
 
     /**

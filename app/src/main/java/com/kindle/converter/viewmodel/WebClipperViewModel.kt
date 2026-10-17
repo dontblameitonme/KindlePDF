@@ -307,8 +307,9 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
                 outputFile = outputFile
             )
             Result.success(file)
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (t: Throwable) {
+            val ex = if (t is OutOfMemoryError) Exception("导出 EPUB 时内存不足 (OutOfMemory)") else (t as? Exception ?: Exception(t.message))
+            Result.failure(ex)
         }
     }
 
@@ -353,8 +354,9 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             } else {
                 Result.failure(Exception("PDF 生成失败"))
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (t: Throwable) {
+            val ex = if (t is OutOfMemoryError) Exception("排版生成 PDF 时内存不足 (OutOfMemory)") else (t as? Exception ?: Exception(t.message))
+            Result.failure(ex)
         }
     }
 
