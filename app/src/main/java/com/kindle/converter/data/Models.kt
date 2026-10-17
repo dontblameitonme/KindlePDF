@@ -196,7 +196,17 @@ data class TypesettingParams(
     val boldHeadings: Boolean = true,
     val headingScale: Float = 1.4f,
     val enableOrphanControl: Boolean = true,
-    val enableWidowControl: Boolean = true
+    val enableWidowControl: Boolean = true,
+    /**
+     * 长文档分卷排版模式。
+     * - NONE：不分卷（单本完整 PDF）
+     * - AUTO：智能自动分卷（预估超过 600 页时自动分卷，每卷约 500 页）
+     * - TWO_VOLUMES：分 2 卷（上/下册）
+     * - THREE_VOLUMES：分 3 卷（上/中/下册）
+     * - FOUR_VOLUMES：分 4 卷
+     * - FIVE_VOLUMES：分 5 卷
+     */
+    val volumeSplitMode: VolumeSplitMode = VolumeSplitMode.NONE
 ) {
     val availableWidth: Float get() = pageWidth - marginLeft - marginRight
     val availableHeight: Float get() = pageHeight - marginTop - marginBottom
@@ -269,6 +279,23 @@ enum class ImageWrapMode(val displayName: String) {
 
     companion object {
         val ALL: List<ImageWrapMode> = values().toList()
+    }
+}
+
+/**
+ * 长文档自动分卷排版模式。
+ * 将过长书籍切分为多卷独立 PDF 导出，既避免内存超限，也便于墨水屏阅读器流畅翻页。
+ */
+enum class VolumeSplitMode(val displayName: String, val volumeCount: Int) {
+    NONE("不分卷", 1),
+    AUTO("智能自动分卷 (每卷约500页)", 0),
+    TWO_VOLUMES("分 2 卷 (上/下册)", 2),
+    THREE_VOLUMES("分 3 卷 (上/中/下册)", 3),
+    FOUR_VOLUMES("分 4 卷", 4),
+    FIVE_VOLUMES("分 5 卷", 5);
+
+    companion object {
+        val ALL: List<VolumeSplitMode> = values().toList()
     }
 }
 

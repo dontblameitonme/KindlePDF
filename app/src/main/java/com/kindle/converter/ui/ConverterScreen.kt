@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,6 +26,7 @@ import com.kindle.converter.data.ImageWrapMode
 import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.data.VerticalAlignment
+import com.kindle.converter.data.VolumeSplitMode
 import com.kindle.converter.viewmodel.ConverterViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -302,6 +304,60 @@ fun ConverterScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showPresetSaveDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // --- 超大文件分卷询问弹窗 ---
+    state.splitPrompt?.let { prompt ->
+        var selectedVols by remember(prompt) { mutableStateOf(prompt.suggestedVolumes) }
+
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissSplitPrompt() },
+            icon = { Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text("文件篇幅过大，是否分卷？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "文件「${prompt.fileItem.name}」内容较多，合并为单本 PDF 容易引起内存不足或 Kindle 翻页卡顿。\n建议将其自动切分为多卷独立导出（每卷独立生成目录与书签）。",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    Text(
+                        text = "请选择分卷数量：",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(2, 3, 4, 5).forEach { count ->
+                            val label = if (count == 2) "2卷(上/下)" else if (count == 3) "3卷(上/中/下)" else "${count}卷"
+                            FilterChip(
+                                selected = selectedVols == count,
+                                onClick = { selectedVols = count },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.confirmSplitConversion(selectedVols) }
+                ) {
+                    Text("立即分卷转换")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { viewModel.dismissSplitPrompt() }
+                ) {
+                    Text("取消")
+                }
             }
         )
     }
@@ -664,6 +720,36 @@ private fun ParameterPanel(
             )
         }
     }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    Text("长文档分卷排版", style = MaterialTheme.typography.labelLarge)
+    Spacer(modifier = Modifier.height(4.dp))
+    var splitExpanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { splitExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(params.volumeSplitMode.displayName)
+            Spacer(modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = splitExpanded, onDismissRequest = { splitExpanded = false }) {
+            VolumeSplitMode.ALL.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.displayName) },
+                    onClick = {
+                        onParamsChange(params.copy(volumeSplitMode = mode))
+                        splitExpanded = false
+                    }
+                )
+            }
+        }
+    }
+    Text(
+        text = "将超长文档切分为多卷独立 PDF 导出，避免手机内存不足并提升阅读器翻页流畅度",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp)
+    )
 
     Spacer(modifier = Modifier.height(12.dp))
 

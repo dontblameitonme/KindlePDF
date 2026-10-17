@@ -5,6 +5,7 @@ import com.kindle.converter.data.ImageWrapMode
 import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.data.VerticalAlignment
+import com.kindle.converter.data.VolumeSplitMode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -139,6 +140,7 @@ class PresetRepository(private val context: Context) {
         put("headingScale", p.headingScale)
         put("enableOrphanControl", p.enableOrphanControl)
         put("enableWidowControl", p.enableWidowControl)
+        put("volumeSplitMode", p.volumeSplitMode.name)
     }
 
     fun paramsFromJson(o: JSONObject?): TypesettingParams {
@@ -149,6 +151,8 @@ class PresetRepository(private val context: Context) {
         val va = try { VerticalAlignment.valueOf(vaName) } catch (_: Exception) { TypesettingParams().verticalAlignment }
         val iwName = o.optString("imageWrapMode", TypesettingParams().imageWrapMode.name)
         val iw = try { ImageWrapMode.valueOf(iwName) } catch (_: Exception) { TypesettingParams().imageWrapMode }
+        val vsmName = o.optString("volumeSplitMode", TypesettingParams().volumeSplitMode.name)
+        val vsm = try { VolumeSplitMode.valueOf(vsmName) } catch (_: Exception) { TypesettingParams().volumeSplitMode }
         return TypesettingParams(
             pageWidth = o.optDouble("pageWidth", 258.0).toFloat(),
             pageHeight = o.optDouble("pageHeight", 346.0).toFloat(),
@@ -169,7 +173,8 @@ class PresetRepository(private val context: Context) {
             boldHeadings = o.optBoolean("boldHeadings", true),
             headingScale = o.optDouble("headingScale", 1.4).toFloat(),
             enableOrphanControl = o.optBoolean("enableOrphanControl", true),
-            enableWidowControl = o.optBoolean("enableWidowControl", true)
+            enableWidowControl = o.optBoolean("enableWidowControl", true),
+            volumeSplitMode = vsm
         )
     }
 }

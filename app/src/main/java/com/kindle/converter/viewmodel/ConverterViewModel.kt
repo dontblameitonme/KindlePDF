@@ -14,7 +14,9 @@ import com.kindle.converter.data.ParseContext
 import com.kindle.converter.data.TextRun
 import com.kindle.converter.data.TocEntry
 import com.kindle.converter.data.TypesettingParams
+import com.kindle.converter.data.VolumeSplitMode
 import com.kindle.converter.parser.DocumentParser
+import com.kindle.converter.parser.DocumentSplitter
 import com.kindle.converter.parser.DownloadedImage
 import com.kindle.converter.parser.ImageDownloader
 import com.kindle.converter.pdf.FontManager
@@ -50,6 +52,14 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         val pageCount: Int = 0
     )
 
+    /** 超大文档分卷提示弹窗状态 */
+    data class SplitPrompt(
+        val fileItem: FileItem,
+        val reason: String = "文件篇幅过大导致内存不足",
+        val suggestedVolumes: Int = 2,
+        val document: Document? = null
+    )
+
     /** 待用户选择保存位置的文件（同目录写入失败时的回退） */
     data class PendingSave(
         val tempFilePath: String,
@@ -77,6 +87,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         val conversionResults: List<ConversionResult> = emptyList(),
         val errorMessage: String? = null,
         val statusMessage: String? = null,
+        val splitPrompt: SplitPrompt? = null,
         /** 各区域折叠状态。key: "fonts" | "params" | "presets"，缺失/true=展开 */
         val expandedSections: Map<String, Boolean> = emptyMap()
     )
@@ -506,83 +517,49 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             )
 
             for ((index, fileItem) in state.files.withIndex()) {
+                var parsedDoc: Document? = null
                 try {
                     val bytes = readUriBytes(fileItem.uri)
                     val document = DocumentParser.parse(fileItem.name, bytes, ctx, imageResolver)
+                    parsedDoc = document
 
-                    val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
-                    val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
-                    val typesetResult = engine.typesetWithDetails(document, params)
-                    val pages = typesetResult.pages
+                    val targetVols = when (params.volumeSplitMode) {
+                        VolumeSplitMode.NONE -> 1
+                        VolumeSplitMode.AUTO -> DocumentSplitter.calculateAutoVolumes(document)
+                        else -> params.volumeSplitMode.volumeCount
+                    }
 
-                    val bookmarks = createBookmarks(document, pages, typesetResult.blockPageMap)
-
-                    // 先生成到缓存临时文件
-                    val tempFile = File(app.cacheDir, "out_${System.currentTimeMillis()}_$index.pdf")
-                    val generated = pdfGenerator.generate(pages, bookmarks, tempFile)
-
-                    if (generated && tempFile.exists()) {
-                        val outName = fileItem.name.substringBeforeLast('.') + ".pdf"
-                        val outUri = resolveOutputUri(fileItem.uri, outName)
-                        if (outUri != null) {
-                            var written = false
-                            try {
-                                app.contentResolver.openOutputStream(outUri)?.use { os ->
-                                    tempFile.inputStream().use { it.copyTo(os) }
-                                }
-                                written = true
-                                results.add(
-                                    ConversionResult(
-                                        fileName = fileItem.name,
-                                        success = true,
-                                        outputPath = outName,
-                                        pageCount = pages.size
-                                    )
-                                )
-                            } catch (e: Exception) {
-                                // 同目录写入失败，回退到让用户选择位置
-                                results.add(
-                                    ConversionResult(
-                                        fileName = fileItem.name, success = true,
-                                        outputPath = "请在弹窗中选择保存位置", pageCount = pages.size
-                                    )
-                                )
-                                _uiState.update {
-                                    it.copy(pendingSaves = it.pendingSaves +
-                                        PendingSave(tempFile.absolutePath, outName, fileItem.name))
-                                }
-                            }
-                            if (written) tempFile.delete()
-                        } else {
-                            // 无法解析同目录 Uri，回退
-                            results.add(
-                                ConversionResult(
-                                    fileName = fileItem.name, success = true,
-                                    outputPath = "请在弹窗中选择保存位置", pageCount = pages.size
-                                )
-                            )
-                            _uiState.update {
-                                it.copy(pendingSaves = it.pendingSaves +
-                                    PendingSave(tempFile.absolutePath, outName, fileItem.name))
-                            }
-                        }
+                    if (targetVols > 1) {
+                        convertDocumentInVolumes(document, fileItem, targetVols, fontInfo, params, results)
                     } else {
-                        results.add(
-                            ConversionResult(
-                                fileName = fileItem.name, success = false,
-                                error = "PDF 生成失败"
-                            )
-                        )
+                        val outName = fileItem.name.substringBeforeLast('.') + ".pdf"
+                        generateAndSavePdf(document, fileItem, outName, fontInfo, params, results)
                     }
                 } catch (t: Throwable) {
-                    val msg = if (t is OutOfMemoryError) {
-                        "文件过大导致内存不足 (OutOfMemory)，建议分卷或精简图片后重试"
+                    if (t is OutOfMemoryError) {
+                        // 触发分卷询问弹窗
+                        val suggested = if (parsedDoc != null) {
+                            DocumentSplitter.calculateAutoVolumes(parsedDoc).coerceAtLeast(2)
+                        } else 2
+                        _uiState.update {
+                            it.copy(
+                                isConverting = false,
+                                conversionResults = results,
+                                splitPrompt = SplitPrompt(
+                                    fileItem = fileItem,
+                                    reason = "文件篇幅过大导致内存不足",
+                                    suggestedVolumes = suggested,
+                                    document = parsedDoc
+                                )
+                            )
+                        }
+                        return@launch
                     } else {
-                        t.message ?: "未知错误"
+                        val msg = t.message ?: "未知错误"
+                        results.add(
+                            ConversionResult(fileName = fileItem.name, success = false, error = msg)
+                        )
                     }
-                    results.add(
-                        ConversionResult(fileName = fileItem.name, success = false, error = msg)
-                    )
                 }
 
                 _uiState.update {
@@ -593,6 +570,173 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.update {
                 it.copy(isConverting = false, conversionResults = results)
             }
+        }
+    }
+
+    /** 用户在分卷询问弹窗中取消，标记当前文件失败 */
+    fun dismissSplitPrompt() {
+        val prompt = _uiState.value.splitPrompt ?: return
+        _uiState.update {
+            it.copy(
+                splitPrompt = null,
+                conversionResults = it.conversionResults + ConversionResult(
+                    fileName = prompt.fileItem.name,
+                    success = false,
+                    error = "文件过大导致内存不足，已取消分卷转换"
+                )
+            )
+        }
+    }
+
+    /** 用户在分卷询问弹窗中确认分卷，执行分卷转换导出 */
+    fun confirmSplitConversion(volumes: Int) {
+        val prompt = _uiState.value.splitPrompt ?: return
+        val fontInfo = fontManager.getCurrentFontInfo()
+        if (fontInfo == null) {
+            _uiState.update { it.copy(splitPrompt = null, errorMessage = "尚未导入字体，请先导入字体再转换") }
+            return
+        }
+
+        val params = _uiState.value.params
+        _uiState.update {
+            it.copy(splitPrompt = null, isConverting = true, conversionProgress = 0f, errorMessage = null)
+        }
+
+        viewModelScope.launch(Dispatchers.Default) {
+            val results = mutableListOf<ConversionResult>()
+            val ctx = ParseContext(
+                stripHeadersFooters = params.stripHeadersFooters,
+                imageWrapMode = params.imageWrapMode,
+                hideFrontToc = params.hideFrontToc
+            )
+            try {
+                val doc = prompt.document ?: run {
+                    val bytes = readUriBytes(prompt.fileItem.uri)
+                    // 如果是超大纯文本且此前一次性解析失败，尝试流式分块
+                    if ((prompt.fileItem.name.endsWith(".txt", ignoreCase = true) || prompt.fileItem.name.endsWith(".md", ignoreCase = true)) && bytes.isNotEmpty()) {
+                        null
+                    } else {
+                        DocumentParser.parse(prompt.fileItem.name, bytes, ctx, imageResolver)
+                    }
+                }
+
+                if (doc != null) {
+                    convertDocumentInVolumes(doc, prompt.fileItem, volumes, fontInfo, params, results)
+                } else {
+                    // 纯文本极端超大场景：字节切分后逐卷解析
+                    val bytes = readUriBytes(prompt.fileItem.uri)
+                    val chunks = DocumentSplitter.splitTextBytes(bytes, volumes)
+                    val baseName = prompt.fileItem.name.substringBeforeLast('.')
+                    for ((idx, chunkBytes) in chunks.withIndex()) {
+                        val chunkDoc = DocumentParser.parse(prompt.fileItem.name, chunkBytes, ctx, imageResolver)
+                        val label = DocumentSplitter.getVolumeLabel(idx, chunks.size)
+                        val outName = "${baseName}_${label}.pdf"
+                        generateAndSavePdf(chunkDoc, prompt.fileItem, outName, fontInfo, params, results)
+                        System.gc()
+                    }
+                }
+            } catch (t: Throwable) {
+                val msg = if (t is OutOfMemoryError) "分卷转换时内存仍然不足，建议增加分卷数" else (t.message ?: "未知错误")
+                results.add(ConversionResult(fileName = prompt.fileItem.name, success = false, error = msg))
+            }
+
+            _uiState.update {
+                it.copy(
+                    isConverting = false,
+                    conversionProgress = 1f,
+                    conversionResults = it.conversionResults + results
+                )
+            }
+        }
+    }
+
+    private suspend fun convertDocumentInVolumes(
+        document: Document,
+        fileItem: FileItem,
+        volumes: Int,
+        fontInfo: FontManager.FontInfo,
+        params: TypesettingParams,
+        results: MutableList<ConversionResult>
+    ) {
+        val baseName = fileItem.name.substringBeforeLast('.')
+        val volumeList = DocumentSplitter.splitIntoVolumes(document, volumes)
+        for (vol in volumeList) {
+            val outName = "${baseName}_${vol.label}.pdf"
+            generateAndSavePdf(vol.document, fileItem, outName, fontInfo, params, results)
+            System.gc()
+        }
+    }
+
+    private suspend fun generateAndSavePdf(
+        document: Document,
+        fileItem: FileItem,
+        outName: String,
+        fontInfo: FontManager.FontInfo,
+        params: TypesettingParams,
+        results: MutableList<ConversionResult>
+    ): Boolean {
+        val app = getApplication<Application>()
+        val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
+        val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
+        val typesetResult = engine.typesetWithDetails(document, params)
+        val pages = typesetResult.pages
+
+        val bookmarks = createBookmarks(document, pages, typesetResult.blockPageMap)
+
+        val tempFile = File(app.cacheDir, "out_${System.currentTimeMillis()}_${kotlin.math.abs(outName.hashCode())}.pdf")
+        val generated = pdfGenerator.generate(pages, bookmarks, tempFile)
+
+        if (generated && tempFile.exists()) {
+            val outUri = resolveOutputUri(fileItem.uri, outName)
+            if (outUri != null) {
+                var written = false
+                try {
+                    app.contentResolver.openOutputStream(outUri)?.use { os ->
+                        tempFile.inputStream().use { it.copyTo(os) }
+                    }
+                    written = true
+                    results.add(
+                        ConversionResult(
+                            fileName = outName,
+                            success = true,
+                            outputPath = outName,
+                            pageCount = pages.size
+                        )
+                    )
+                } catch (_: Throwable) {
+                    results.add(
+                        ConversionResult(
+                            fileName = outName, success = true,
+                            outputPath = "请在弹窗中选择保存位置", pageCount = pages.size
+                        )
+                    )
+                    _uiState.update {
+                        it.copy(pendingSaves = it.pendingSaves +
+                            PendingSave(tempFile.absolutePath, outName, fileItem.name))
+                    }
+                }
+                if (written) tempFile.delete()
+            } else {
+                results.add(
+                    ConversionResult(
+                        fileName = outName, success = true,
+                        outputPath = "请在弹窗中选择保存位置", pageCount = pages.size
+                    )
+                )
+                _uiState.update {
+                    it.copy(pendingSaves = it.pendingSaves +
+                        PendingSave(tempFile.absolutePath, outName, fileItem.name))
+                }
+            }
+            return true
+        } else {
+            results.add(
+                ConversionResult(
+                    fileName = outName, success = false,
+                    error = "PDF 生成失败"
+                )
+            )
+            return false
         }
     }
 
