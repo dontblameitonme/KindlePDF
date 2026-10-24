@@ -3,10 +3,6 @@
 将 `txt / md / docx / epub / mobi / azw / html / pdf` 文档重新排版并转换为 PDF，针对 **6 英寸 Kindle 等墨水屏阅读器** 做了深度中文排版与图片自适应优化。  
 基于 Kotlin + Jetpack Compose（Material 3）+ PdfBox-Android 实现的纯本地 Android 应用。
 
-> 💡 **版本发布与更新日志**：详细的各版本发布说明、特性亮点与安装包下载请参见 [GitHub Releases](https://github.com/dontblameitonme/KindlePDF/releases)。
-
----
-
 <details>
 <summary><h3>✨ 功能特性（点击展开）</h3></summary>
 
@@ -81,8 +77,6 @@
 
 </details>
 
----
-
 <details>
 <summary><h3>📂 目录结构与核心模块说明（点击展开）</h3></summary>
 
@@ -135,8 +129,6 @@ app/src/main/java/com/kindle/converter/
 ```
 
 </details>
-
----
 
 <details>
 <summary><h3>🔧 核心技术细节与近期重要修复说明（点击展开）</h3></summary>
@@ -198,8 +190,6 @@ app/src/main/java/com/kindle/converter/
 
 </details>
 
----
-
 <details>
 <summary><h3>📦 构建要求与打包步骤（点击展开）</h3></summary>
 
@@ -228,8 +218,6 @@ $env:ANDROID_HOME = "C:\Android\Sdk"
 > **签名说明**：发布签名配置位于 `app/build.gradle.kts` 的 `signingConfigs.release`，自动读取项目根目录的 `keystore.properties`（已加入 `.gitignore`，包含 `storeFile`、`storePassword`、`keyAlias`、`keyPassword`）。
 
 </details>
-
----
 
 <details>
 <summary><h3>📄 许可证（点击展开）</h3></summary>
