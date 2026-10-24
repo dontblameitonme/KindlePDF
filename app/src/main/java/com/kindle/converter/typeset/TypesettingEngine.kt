@@ -6,6 +6,7 @@ import com.kindle.converter.data.ImageWrapMode
 import com.kindle.converter.data.LayoutElement
 import com.kindle.converter.data.PageLayout
 import com.kindle.converter.data.PositionedSegment
+import com.kindle.converter.data.TableDisplayMode
 import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TextRun
 import com.kindle.converter.data.TypesettingParams
@@ -709,37 +710,125 @@ class Paginator {
                     return rowY
                 }
 
+                fun splitTableRow(
+                    row: TableRowLayout,
+                    maxLinesToKeep: Int
+                ): Pair<TableRowLayout, TableRowLayout> {
+                    val firstCellLines = ArrayList<List<LineBreaker.Line>>(row.cellLines.size)
+                    val secondCellLines = ArrayList<List<LineBreaker.Line>>(row.cellLines.size)
+                    var firstMax = 0
+                    var secondMax = 0
+                    for (colLines in row.cellLines) {
+                        val firstPart = colLines.take(maxLinesToKeep)
+                        val secondPart = colLines.drop(maxLinesToKeep)
+                        firstCellLines.add(firstPart)
+                        secondCellLines.add(secondPart)
+                        if (firstPart.size > firstMax) firstMax = firstPart.size
+                        if (secondPart.size > secondMax) secondMax = secondPart.size
+                    }
+                    val h1 = firstMax * tbl.cellLineHeight + tbl.cellPadY * 2f
+                    val h2 = secondMax * tbl.cellLineHeight + tbl.cellPadY * 2f
+                    return Pair(
+                        TableRowLayout(cellLines = firstCellLines, height = h1, isHeader = row.isHeader),
+                        TableRowLayout(cellLines = secondCellLines, height = h2, isHeader = row.isHeader)
+                    )
+                }
+
+                fun buildContinuationHeader(headerRow: TableRowLayout): TableRowLayout {
+                    val newLines = headerRow.cellLines.mapIndexed { cIdx, colLines ->
+                        if (cIdx == 0 && colLines.isNotEmpty()) {
+                            val lastLine = colLines.last()
+                            val contSeg = LineBreaker.LineSegment(
+                                text = " (续)",
+                                x = lastLine.width,
+                                fontSize = tbl.tableFontSize * 0.9f,
+                                bold = true,
+                                italic = false
+                            )
+                            val updatedLastLine = lastLine.copy(
+                                segments = lastLine.segments + contSeg,
+                                width = lastLine.width + tbl.tableFontSize * 2f
+                            )
+                            colLines.dropLast(1) + updatedLastLine
+                        } else {
+                            colLines
+                        }
+                    }
+                    return headerRow.copy(cellLines = newLines)
+                }
+
                 if (tbl.bodyRows.isEmpty() && tbl.headerRow != null) {
                     currentY = emitTableSlice(listOf(tbl.headerRow), currentY)
                 } else {
-                    var bodyIdx = 0
-                    while (bodyIdx < tbl.bodyRows.size) {
+                    val pendingRows = ArrayDeque<TableRowLayout>()
+                    pendingRows.addAll(tbl.bodyRows)
+                    var isFirstSliceOfTable = true
+
+                    while (pendingRows.isNotEmpty()) {
                         val sliceRows = mutableListOf<TableRowLayout>()
                         var sliceH = 0f
-                        if (tbl.headerRow != null) {
-                            sliceRows.add(tbl.headerRow)
-                            sliceH += tbl.headerRow.height
+
+                        val headerToUse = if (tbl.headerRow != null) {
+                            if (isFirstSliceOfTable) tbl.headerRow else buildContinuationHeader(tbl.headerRow)
+                        } else null
+
+                        if (headerToUse != null) {
+                            sliceRows.add(headerToUse)
+                            sliceH += headerToUse.height
                         }
+
                         var bodyCountInSlice = 0
-                        while (bodyIdx < tbl.bodyRows.size) {
-                            val nextRow = tbl.bodyRows[bodyIdx]
-                            val fits = currentY + sliceH + nextRow.height <= maxBottom + 0.1f
-                            if (fits || (bodyCountInSlice == 0 && currentElements.isEmpty())) {
+
+                        while (pendingRows.isNotEmpty()) {
+                            val nextRow = pendingRows.first()
+                            val availableH = maxBottom - currentY - sliceH
+                            val fits = nextRow.height <= availableH + 0.1f
+
+                            if (fits) {
                                 sliceRows.add(nextRow)
                                 sliceH += nextRow.height
-                                bodyIdx++
+                                pendingRows.removeFirst()
                                 bodyCountInSlice++
                             } else {
-                                break
+                                // 当前行高度超出剩余空间
+                                if (bodyCountInSlice == 0 && currentElements.isEmpty()) {
+                                    // 在全新的空白页顶部（仅含表头），单行依然超出一整页：按文本行切分该行跨页
+                                    val availLinesH = availableH - tbl.cellPadY * 2f
+                                    val fitLines = (availLinesH / tbl.cellLineHeight).toInt().coerceAtLeast(1)
+                                    val totalLinesInNextRow = nextRow.cellLines.maxOfOrNull { it.size } ?: 0
+
+                                    if (fitLines < totalLinesInNextRow) {
+                                        val (firstPart, secondPart) = splitTableRow(nextRow, fitLines)
+                                        sliceRows.add(firstPart)
+                                        sliceH += firstPart.height
+                                        pendingRows.removeFirst()
+                                        pendingRows.addFirst(secondPart)
+                                        bodyCountInSlice++
+                                    } else {
+                                        // 无法进一步拆分，保底放入
+                                        sliceRows.add(nextRow)
+                                        sliceH += nextRow.height
+                                        pendingRows.removeFirst()
+                                        bodyCountInSlice++
+                                    }
+                                    break
+                                } else {
+                                    // 当前页已有内容放不下整行，换新页重试排版
+                                    break
+                                }
                             }
                         }
+
                         if (bodyCountInSlice == 0) {
-                            // 当前页剩余空间连表头+第1行都放不下，换新页重试
+                            // 当前页连表头+首行切片都容纳不下，换新页重试
                             newPage()
                             continue
                         }
+
                         currentY = emitTableSlice(sliceRows, currentY)
-                        if (bodyIdx < tbl.bodyRows.size) {
+                        isFirstSliceOfTable = false
+
+                        if (pendingRows.isNotEmpty()) {
                             newPage()
                         }
                     }
@@ -1282,9 +1371,15 @@ class TypesettingEngine(
                 }
 
                 is Block.TableBlock -> {
-                    val tableLayout = layoutTableBlock(block, availableWidth, params)
-                    if (tableLayout != null) {
-                        blockLinesList.add(Paginator.BlockLines(emptyList(), tableLayout = tableLayout, sourceBlockIndex = blockIndex))
+                    val useCard = (params.tableDisplayMode == TableDisplayMode.SMART_CARD && isTableEligibleForCard(block))
+                    if (useCard) {
+                        val cardBlocks = layoutTableCardBlock(block, availableWidth, params, blockIndex)
+                        blockLinesList.addAll(cardBlocks)
+                    } else {
+                        val tableLayout = layoutTableBlock(block, availableWidth, params)
+                        if (tableLayout != null) {
+                            blockLinesList.add(Paginator.BlockLines(emptyList(), tableLayout = tableLayout, sourceBlockIndex = blockIndex))
+                        }
                     }
                 }
 
@@ -2097,13 +2192,13 @@ class TypesettingEngine(
         val scale = when {
             colCount <= 2 -> 0.90f
             colCount == 3 -> 0.85f
-            colCount == 4 -> 0.80f
-            else -> 0.74f
+            colCount == 4 -> 0.78f
+            else -> 0.72f
         }
-        val tableFontSize = (params.fontSize * scale).coerceIn(6.5f, params.fontSize)
-        val cellLineHeight = tableFontSize * 1.32f
-        val cellPadX = (tableFontSize * 0.35f).coerceAtLeast(3f)
-        val cellPadY = (tableFontSize * 0.30f).coerceAtLeast(2.5f)
+        val tableFontSize = (params.fontSize * scale).coerceIn(6.2f, params.fontSize)
+        val cellLineHeight = tableFontSize * 1.30f
+        val cellPadX = (tableFontSize * 0.28f).coerceAtLeast(2.2f)
+        val cellPadY = (tableFontSize * 0.25f).coerceAtLeast(2.0f)
 
         // 1) 测量每一列的最大自然宽度
         val minColW = (tableFontSize * 2.2f + cellPadX * 2f).coerceAtMost(availableWidth / colCount)
@@ -2253,6 +2348,143 @@ class TypesettingEngine(
             cellLineHeight = cellLineHeight,
             tableFontSize = tableFontSize
         )
+    }
+
+    /**
+     * 判断表格是否适合在 6 英寸墨水屏上转换为结构化卡片流（Smart Card Flow）。
+     *
+     * 判定标准：
+     * 1. 列数 >= 3：在 6 寸屏幕 222pt 版宽下，3 列以上网格每列仅能分得 3~5 个汉字，极度局促，强制卡片化；
+     * 2. 2 列表格：若任意单元格文本较长（> 16 字符），说明属于长文本键值描述表，卡片化阅读体验远优于挤压折行。
+     */
+    private fun isTableEligibleForCard(block: Block.TableBlock): Boolean {
+        val colCount = maxOf(
+            block.headers.size,
+            block.rows.maxOfOrNull { it.size } ?: 0
+        )
+        if (colCount >= 3) return true
+        if (colCount <= 1) return false
+        return block.rows.any { row ->
+            row.any { cell -> cell.sumOf { it.text.length } > 16 }
+        }
+    }
+
+    /**
+     * 针对 6 英寸 Kindle 窄屏定制的“智能卡片流”排版引擎：
+     *
+     * 将原本被横向压缩为“细长小票”的多列表格，重构为优雅清晰的结构化卡片流：
+     * 1. **卡片标题（Card Title）**：首列（实体名称/赛道/序号）升格为卡片标题，加粗并放大 1.05x，标记 `isHeading = true`
+     *    获得防孤行保护（keepWithNext），绝不孤悬于页底；
+     * 2. **全宽字段流（Full-width Fields）**：后续各列以 `【表头标签】` 通栏展开，独享整页 222pt 宽度（单行 22~26 个汉字），
+     *    彻底恢复自然中文阅读节奏；
+     * 3. **自然跨页与分隔**：卡片之间以轻量水平细线分隔，单元格长文本由 LineBreaker 自然折行并支持段间自然跨页，
+     *    从根本上解决表格在页底横向切字与文字腰斩问题。
+     */
+    private fun layoutTableCardBlock(
+        block: Block.TableBlock,
+        availableWidth: Float,
+        params: TypesettingParams,
+        sourceBlockIndex: Int
+    ): List<Paginator.BlockLines> {
+        val result = mutableListOf<Paginator.BlockLines>()
+        val colCount = maxOf(
+            block.headers.size,
+            block.rows.maxOfOrNull { it.size } ?: 0
+        )
+        if (colCount == 0 || block.rows.isEmpty()) return emptyList()
+
+        val headerNames = List(colCount) { c ->
+            block.headers.getOrNull(c)?.joinToString("") { it.text }?.trim() ?: ""
+        }
+
+        val bulletChar = measurer.resolveSupportedChar('▪', bold = true)
+
+        for ((rIdx, row) in block.rows.withIndex()) {
+            // 每张卡片顶部的分隔线（第一张卡片前作为表格起始线，后续作为卡片间隔线）
+            result.add(
+                Paginator.BlockLines(
+                    lines = emptyList(),
+                    isHorizontalRule = true,
+                    sourceBlockIndex = sourceBlockIndex
+                )
+            )
+
+            val col0Runs = row.getOrNull(0) ?: emptyList()
+            val col0Text = col0Runs.joinToString("") { it.text }.trim()
+            val col0Header = headerNames.getOrNull(0) ?: ""
+
+            val cardTitleRuns = mutableListOf<TextRun>()
+            val cardTitleFontSize = (params.fontSize * 1.05f).coerceAtLeast(params.fontSize)
+
+            if (col0Header.isNotEmpty() && col0Text.length <= 4 && !col0Text.contains(col0Header)) {
+                cardTitleRuns.add(TextRun(text = "$bulletChar $col0Header：", bold = true, fontSize = cardTitleFontSize))
+                cardTitleRuns.addAll(col0Runs.map { it.copy(bold = true, fontSize = cardTitleFontSize) })
+            } else if (col0Text.isNotEmpty()) {
+                cardTitleRuns.add(TextRun(text = "$bulletChar ", bold = true, fontSize = cardTitleFontSize))
+                cardTitleRuns.addAll(col0Runs.map { it.copy(bold = true, fontSize = cardTitleFontSize) })
+            } else {
+                cardTitleRuns.add(TextRun(text = "$bulletChar 第 ${rIdx + 1} 项", bold = true, fontSize = cardTitleFontSize))
+            }
+
+            val titleLines = lineBreaker.breakLines(
+                runs = cardTitleRuns,
+                availableWidth = availableWidth,
+                fontSize = cardTitleFontSize,
+                firstLineIndent = 0f,
+                leftIndent = 0f
+            )
+            if (titleLines.isNotEmpty()) {
+                result.add(
+                    Paginator.BlockLines(
+                        lines = titleLines,
+                        isHeading = true,
+                        headingLevel = 4,
+                        sourceBlockIndex = sourceBlockIndex
+                    )
+                )
+            }
+
+            val startCol = if (col0Text.isEmpty()) 0 else 1
+            for (c in startCol until colCount) {
+                val cellRuns = row.getOrNull(c) ?: emptyList()
+                val cellText = cellRuns.joinToString("") { it.text }.trim()
+                if (cellText.isEmpty()) continue
+
+                val hName = headerNames.getOrNull(c)?.takeIf { it.isNotEmpty() }
+                val labelPrefix = if (hName != null) "【$hName】 " else "• "
+
+                val fieldRuns = mutableListOf<TextRun>()
+                fieldRuns.add(TextRun(text = labelPrefix, bold = true, fontSize = params.fontSize))
+                fieldRuns.addAll(cellRuns.map { it.copy(fontSize = params.fontSize) })
+
+                val fieldLines = lineBreaker.breakLines(
+                    runs = fieldRuns,
+                    availableWidth = availableWidth,
+                    fontSize = params.fontSize,
+                    firstLineIndent = 0f,
+                    leftIndent = 0f
+                )
+                if (fieldLines.isNotEmpty()) {
+                    result.add(
+                        Paginator.BlockLines(
+                            lines = fieldLines,
+                            sourceBlockIndex = sourceBlockIndex
+                        )
+                    )
+                }
+            }
+        }
+
+        // 表格末尾结束线
+        result.add(
+            Paginator.BlockLines(
+                lines = emptyList(),
+                isHorizontalRule = true,
+                sourceBlockIndex = sourceBlockIndex
+            )
+        )
+
+        return result
     }
 
     /**

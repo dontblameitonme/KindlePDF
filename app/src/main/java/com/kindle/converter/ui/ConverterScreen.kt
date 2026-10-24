@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kindle.converter.data.ImageWrapMode
+import com.kindle.converter.data.TableDisplayMode
 import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.data.VerticalAlignment
@@ -746,6 +747,36 @@ private fun ParameterPanel(
     }
     Text(
         text = "将超长文档切分为多卷独立 PDF 导出，避免手机内存不足并提升阅读器翻页流畅度",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp)
+    )
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    Text("表格排版模式", style = MaterialTheme.typography.labelLarge)
+    Spacer(modifier = Modifier.height(4.dp))
+    var tableModeExpanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { tableModeExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text(params.tableDisplayMode.displayName)
+            Spacer(modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+        }
+        DropdownMenu(expanded = tableModeExpanded, onDismissRequest = { tableModeExpanded = false }) {
+            TableDisplayMode.ALL.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.displayName) },
+                    onClick = {
+                        onParamsChange(params.copy(tableDisplayMode = mode))
+                        tableModeExpanded = false
+                    }
+                )
+            }
+        }
+    }
+    Text(
+        text = "智能卡片流：多列/长文本表格转为全宽卡片，告别 3 字细条折行；传统网格支持行内跨页切分防截断",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 4.dp)

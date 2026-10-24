@@ -2,6 +2,7 @@ package com.kindle.converter.pdf
 
 import android.content.Context
 import com.kindle.converter.data.ImageWrapMode
+import com.kindle.converter.data.TableDisplayMode
 import com.kindle.converter.data.TextAlignment
 import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.data.VerticalAlignment
@@ -141,6 +142,7 @@ class PresetRepository(private val context: Context) {
         put("enableOrphanControl", p.enableOrphanControl)
         put("enableWidowControl", p.enableWidowControl)
         put("volumeSplitMode", p.volumeSplitMode.name)
+        put("tableDisplayMode", p.tableDisplayMode.name)
     }
 
     fun paramsFromJson(o: JSONObject?): TypesettingParams {
@@ -153,6 +155,8 @@ class PresetRepository(private val context: Context) {
         val iw = try { ImageWrapMode.valueOf(iwName) } catch (_: Exception) { TypesettingParams().imageWrapMode }
         val vsmName = o.optString("volumeSplitMode", TypesettingParams().volumeSplitMode.name)
         val vsm = try { VolumeSplitMode.valueOf(vsmName) } catch (_: Exception) { TypesettingParams().volumeSplitMode }
+        val tdmName = o.optString("tableDisplayMode", TypesettingParams().tableDisplayMode.name)
+        val tdm = try { TableDisplayMode.valueOf(tdmName) } catch (_: Exception) { TypesettingParams().tableDisplayMode }
         return TypesettingParams(
             pageWidth = o.optDouble("pageWidth", 258.0).toFloat(),
             pageHeight = o.optDouble("pageHeight", 346.0).toFloat(),
@@ -174,7 +178,8 @@ class PresetRepository(private val context: Context) {
             headingScale = o.optDouble("headingScale", 1.4).toFloat(),
             enableOrphanControl = o.optBoolean("enableOrphanControl", true),
             enableWidowControl = o.optBoolean("enableWidowControl", true),
-            volumeSplitMode = vsm
+            volumeSplitMode = vsm,
+            tableDisplayMode = tdm
         )
     }
 }

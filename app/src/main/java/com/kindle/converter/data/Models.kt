@@ -206,7 +206,13 @@ data class TypesettingParams(
      * - FOUR_VOLUMES：分 4 卷
      * - FIVE_VOLUMES：分 5 卷
      */
-    val volumeSplitMode: VolumeSplitMode = VolumeSplitMode.NONE
+    val volumeSplitMode: VolumeSplitMode = VolumeSplitMode.NONE,
+    /**
+     * 6 英寸墨水屏表格呈现模式。
+     * - SMART_CARD（默认推荐）：智能卡片流。多列表格或文本密集表格自动转构为结构化卡片排版，单行 22~26 字通栏畅读，彻底消除细条折行与跨页截断。
+     * - COMPACT_GRID：传统紧凑网格。保留传统网格边框，通过行内跨页切分算法杜绝文字截断与丢失。
+     */
+    val tableDisplayMode: TableDisplayMode = TableDisplayMode.SMART_CARD
 ) {
     val availableWidth: Float get() = pageWidth - marginLeft - marginRight
     val availableHeight: Float get() = pageHeight - marginTop - marginBottom
@@ -296,6 +302,20 @@ enum class VolumeSplitMode(val displayName: String, val volumeCount: Int) {
 
     companion object {
         val ALL: List<VolumeSplitMode> = values().toList()
+    }
+}
+
+/**
+ * 6 英寸墨水屏表格呈现模式。
+ * - SMART_CARD（默认推荐）：智能卡片流。多列表格或文本密集表格自动转构为结构化卡片排版，单行 22~26 字通栏畅读，彻底消除细条折行与跨页截断。
+ * - COMPACT_GRID：传统紧凑网格。保留传统表格网格与边框，但通过单行行内跨页切分算法彻底杜绝文字腰斩与溢出。
+ */
+enum class TableDisplayMode(val displayName: String) {
+    SMART_CARD("智能卡片流（推荐 6寸墨水屏）"),
+    COMPACT_GRID("传统紧凑网格（跨页切分防截断）");
+
+    companion object {
+        val ALL: List<TableDisplayMode> = values().toList()
     }
 }
 
