@@ -597,7 +597,15 @@ class Paginator {
                 continue
             }
 
-            // ----- 2) 结构化表格块 (TableBlock)：完整网格线 + 行原子性 + 跨页自动重复表头 -----
+            // ----- 2) 结构化表格块 (TableBlock)：传统网格流式分页与行内切分 (Intra-Cell Line Pagination) -----
+            // 核心设计与维护说明：
+            // - 在 SMART_CARD 模式下，多列表格已在 layoutTableCardBlock 提前重构为全宽结构化卡片流，作为普通 BlockLines 参与自然段落分页。
+            // - 在 COMPACT_GRID 模式（或紧凑 2 列表格）下，本段代码负责传统真网格排版：
+            //   1. 表头保持与自动续接：跨页时自动在新页顶部重现表头，并调用 buildContinuationHeader 增加 "(续)" 标识；
+            //   2. FIFO 队列与单行行内拆分（彻底解决截断与文字腰斩）：
+            //      旧版将 TableRowLayout 作为不可分割原子，一旦单行高度 > 页面可用高度即强行放置并导致页底横向切字、下半段文字永久丢失。
+            //      现改用 pendingRows 队列：当单行在空页顶部仍放不下时，调用 splitTableRow 按文本行数动态拆解为 firstPart 与 secondPart；
+            //      firstPart 填满当前页并封闭下框线，secondPart 重新入队放至下一页，杜绝文字腰斩，实现任意篇幅单元格的无损跨页。
             if (entry.tableLayout != null) {
                 val tbl = entry.tableLayout
                 val colOffsets = FloatArray(tbl.colWidths.size)
@@ -710,6 +718,15 @@ class Paginator {
                     return rowY
                 }
 
+                /**
+                 * 将单行超出页面的表格行（TableRowLayout）按文本行数切割为两部分：
+                 * - firstPart：保留各单元格前 maxLinesToKeep 行，放置于当前页；
+                 * - secondPart：截取第 maxLinesToKeep 行及之后的剩余文本行，留待下一页继续排版。
+                 *
+                 * 高度重算逻辑：
+                 * 按照各列在截取后的最大行数，重新计算 firstPart.height 与 secondPart.height，
+                 * 保证分页几何坐标严格贴合版心，消除文字腰斩与溢出。
+                 */
                 fun splitTableRow(
                     row: TableRowLayout,
                     maxLinesToKeep: Int
@@ -734,6 +751,11 @@ class Paginator {
                     )
                 }
 
+                /**
+                 * 为跨页续接的表格生成带有 "(续)" 标识的延续表头：
+                 * 当一个表格跨越多页时，每页顶部自动重现表头，并在首列标题追加 " (续)"，
+                 * 方便读者在新页面立即识别各列含义，无需翻回前页对照。
+                 */
                 fun buildContinuationHeader(headerRow: TableRowLayout): TableRowLayout {
                     val newLines = headerRow.cellLines.mapIndexed { cIdx, colLines ->
                         if (cIdx == 0 && colLines.isNotEmpty()) {
