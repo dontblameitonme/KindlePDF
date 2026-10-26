@@ -171,13 +171,13 @@ fun WebClipperScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "粘贴网页链接",
+                            "网页链接",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                     }
 
-                    // 剪贴板一键粘贴小胶囊
+                    // 剪贴板一键粘贴
                     FilledTonalButton(
                         onClick = {
                             val clip = clipboardManager.getText()?.text
@@ -194,7 +194,7 @@ fun WebClipperScreen(
                     ) {
                         Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("粘贴剪贴板", style = MaterialTheme.typography.labelSmall)
+                        Text("粘贴", style = MaterialTheme.typography.labelSmall)
                     }
                 }
 
@@ -206,7 +206,7 @@ fun WebClipperScreen(
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = {
                         Text(
-                            "粘贴知乎、微信公众号、CSDN、新闻或博客链接（多条自动批量解析）…",
+                            "输入或粘贴链接（支持多行批量）",
                             style = MaterialTheme.typography.bodySmall
                         )
                     },
@@ -219,13 +219,12 @@ fun WebClipperScreen(
 
                 Spacer(Modifier.height(10.dp))
 
-                // 【核心视觉聚焦】通栏大号主提取按钮，独占整行，彻底杜绝被挤出屏幕
                 Button(
                     onClick = onExecuteExtract,
                     enabled = inputText.isNotBlank() && !state.isWorking,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp),
+                        .height(44.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
@@ -234,7 +233,7 @@ fun WebClipperScreen(
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        if (detectedUrlCount > 0) "📥 一键添加并提取正文 (${detectedUrlCount} 条链接)" else "📥 一键添加并提取正文",
+                        if (detectedUrlCount > 0) "提取正文 ($detectedUrlCount)" else "提取正文",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -242,58 +241,42 @@ fun WebClipperScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                // 辅助操作下沉分流
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(
-                        onClick = {
-                            inputText = "https://zhuanlan.zhihu.com/p/65928174\nhttps://mp.weixin.qq.com/s/sample_article"
-                        },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(2.dp))
-                        Text("填入测试链接", style = MaterialTheme.typography.labelSmall)
-                    }
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (inputText.isNotBlank() || state.links.isNotEmpty()) {
-                            OutlinedButton(
-                                onClick = {
-                                    inputText = ""
-                                    viewModel.clearAll()
-                                },
-                                enabled = !state.isWorking,
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp)
-                            ) {
-                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("清空", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-
+                    if (inputText.isNotBlank() || state.links.isNotEmpty()) {
                         OutlinedButton(
                             onClick = {
-                                val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
-                                activeBrowserUrl = url
+                                inputText = ""
+                                viewModel.clearAll()
                             },
                             enabled = !state.isWorking,
                             shape = RoundedCornerShape(10.dp),
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             modifier = Modifier.height(32.dp)
                         ) {
-                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("内置浏览器", style = MaterialTheme.typography.labelSmall)
+                            Text("清空", style = MaterialTheme.typography.labelSmall)
                         }
+                        Spacer(Modifier.width(8.dp))
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
+                            activeBrowserUrl = url
+                        },
+                        enabled = !state.isWorking,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("内置浏览器", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -734,7 +717,7 @@ private fun WebArticlePreviewDialog(
                     overflow = TextOverflow.Ellipsis
                 )
 
-                Divider(modifier = Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                 val scrollState = rememberScrollState()
                 val textOnly = remember(article.contentHtml) {

@@ -930,6 +930,10 @@ class Paginator {
 
             var sliceStartY = currentY
             var sliceHasLines = false
+            var sliceFirstLineTopY = 0f
+            var sliceLastLineTopY = 0f
+            var sliceFirstLineFontSize = params.fontSize
+            var sliceLastLineFontSize = params.fontSize
 
             // 判定代码块自身是否已经包含 ASCII 框线（若已包含 ┌─┐│└┘ 则不再重复加外框）
             val codeHasOwnBox = entry.isCodeBlock && lines.any { ln ->
@@ -939,17 +943,24 @@ class Paginator {
             fun flushBlockSliceDecorations(sliceEndY: Float) {
                 if (!sliceHasLines) return
                 if (entry.isQuoteBlock) {
-                    // 引用块左侧竖线（支持跨页自动分段绘制）
-                    val barX = params.marginLeft + params.fontSize * 0.5f
-                    val barTop = sliceStartY + 1.5f
-                    val barH = (sliceEndY - sliceStartY - 3f).coerceAtLeast(2f)
+                    val ratio = params.secondaryIndentRatio.coerceIn(0.1f, 1.5f)
+                    val barX = params.marginLeft + (params.fontSize * 0.45f * ratio).coerceAtLeast(2f)
+
+                    // 首行字形顶边缘（行高居中，消除魔数偏移，严格与文字顶对齐）
+                    val firstHalfLead = ((effectiveLineHeight - sliceFirstLineFontSize) * 0.5f).coerceAtLeast(0f)
+                    val barTop = sliceFirstLineTopY + firstHalfLead
+                    // 末行字形底边缘（严格与文字底对齐）
+                    val lastHalfLead = ((effectiveLineHeight - sliceLastLineFontSize) * 0.5f).coerceAtLeast(0f)
+                    val barBottom = sliceLastLineTopY + lastHalfLead + sliceLastLineFontSize
+                    val barH = (barBottom - barTop).coerceAtLeast(params.fontSize * 0.8f)
+
                     currentElements.add(
                         LayoutElement.RuleLine(
                             x = barX,
                             y = barTop,
                             width = 0f,
                             height = barH,
-                            strokeWidth = 2.0f
+                            strokeWidth = (1.8f * ratio.coerceAtLeast(0.6f)).coerceIn(1.2f, 2.0f)
                         )
                     )
                 }
@@ -980,6 +991,8 @@ class Paginator {
                         newPage()
                         sliceStartY = currentY
                         sliceHasLines = false
+                        sliceFirstLineTopY = 0f
+                        sliceLastLineTopY = 0f
                     }
                 }
 
@@ -992,6 +1005,8 @@ class Paginator {
                         newPage()
                         sliceStartY = currentY
                         sliceHasLines = false
+                        sliceFirstLineTopY = 0f
+                        sliceLastLineTopY = 0f
                     }
                 }
 
@@ -1032,6 +1047,8 @@ class Paginator {
                                 currentY += codePadY
                                 sliceStartY = currentY
                                 sliceHasLines = false
+                                sliceFirstLineTopY = 0f
+                                sliceLastLineTopY = 0f
                             }
                         }
                     }
@@ -1046,6 +1063,8 @@ class Paginator {
                     }
                     sliceStartY = currentY
                     sliceHasLines = false
+                    sliceFirstLineTopY = 0f
+                    sliceLastLineTopY = 0f
                 }
 
                 // ---- 行内水平对齐与标点悬挂（GB/T 15834 & W3C CLREQ） ----
@@ -1127,12 +1146,20 @@ class Paginator {
                     blockPageMap[entry.sourceBlockIndex] = pages.size
                 }
 
+                val curLineFontSize = segments.firstOrNull()?.fontSize ?: params.fontSize
+                if (!sliceHasLines) {
+                    sliceFirstLineTopY = currentY
+                    sliceFirstLineFontSize = curLineFontSize
+                }
+                sliceLastLineTopY = currentY
+                sliceLastLineFontSize = curLineFontSize
+
                 currentElements.add(
                     LayoutElement.TextLine(
                         segments = segments,
                         topY = currentY,
                         lineHeight = effectiveLineHeight,
-                        fontSize = segments.firstOrNull()?.fontSize ?: params.fontSize
+                        fontSize = curLineFontSize
                     )
                 )
 
@@ -1262,12 +1289,18 @@ class TypesettingEngine(
         val blockLinesList = mutableListOf<Paginator.BlockLines>()
 
         // 首行缩进规则（按中文排版习惯）：
-        //   LEFT   ：保留（中文段落的视觉特征）
-        //   JUSTIFY：保留（书版正文常用首行缩进 + 两端对齐）
-        //   CENTER / RIGHT：清零（这两种对齐与首行缩进视觉冲突）
-        val paragraphFirstLineIndent = when (params.textAlignment) {
-            TextAlignment.LEFT, TextAlignment.JUSTIFY -> params.firstLineIndent
-            TextAlignment.CENTER, TextAlignment.RIGHT -> 0f
+        //   若开启 disableFirstLineIndent，则强制清零（0pt）；
+        //   否则：
+        //     LEFT   ：保留（中文段落的视觉特征）
+        //     JUSTIFY：保留（书版正文常用首行缩进 + 两端对齐）
+        //     CENTER / RIGHT：清零（这两种对齐与首行缩进视觉冲突）
+        val paragraphFirstLineIndent = if (params.disableFirstLineIndent) {
+            0f
+        } else {
+            when (params.textAlignment) {
+                TextAlignment.LEFT, TextAlignment.JUSTIFY -> params.firstLineIndent
+                TextAlignment.CENTER, TextAlignment.RIGHT -> 0f
+            }
         }
 
         for ((blockIndex, block) in docToTypeset.blocks.withIndex()) {
@@ -1336,9 +1369,11 @@ class TypesettingEngine(
                     }
                     val prefix = if (block.ordered) "${block.orderIndex}. " else "$bulletChar "
                     val prefixWidth = measurer.measureText(prefix, params.fontSize, bold = block.ordered)
-                    val stepIndent = params.fontSize * 0.85f
+                    val ratio = params.secondaryIndentRatio.coerceIn(0.1f, 1.5f)
+                    val stepIndent = params.fontSize * 0.85f * ratio
                     val baseIndent = block.level * stepIndent
-                    val bodyLeftIndent = (baseIndent + prefixWidth.coerceAtLeast(params.fontSize * 0.85f)).coerceAtMost(availableWidth * 0.40f)
+                    val minPrefixGap = (params.fontSize * 0.85f * ratio).coerceAtLeast(params.fontSize * 0.35f)
+                    val bodyLeftIndent = (baseIndent + prefixWidth.coerceAtLeast(minPrefixGap)).coerceAtMost(availableWidth * 0.40f)
                     val prefixX = baseIndent
 
                     val bodyLines = lineBreaker.breakLines(
@@ -1377,12 +1412,14 @@ class TypesettingEngine(
                 }
 
                 is Block.QuoteBlock -> {
-                    // 引用块：左侧留出 1.0em 缩进供 Paginator 绘制左侧竖线，给正文留出充裕版心空间
-                    val indent = params.fontSize * 1.0f
+                    // 引用块：根据 secondaryIndentRatio 比例缩放缩进，压低左侧空间占用
+                    val ratio = params.secondaryIndentRatio.coerceIn(0.1f, 1.5f)
+                    val barOffset = (params.fontSize * 0.45f * ratio).coerceAtLeast(2f)
+                    val quoteIndent = barOffset + (params.fontSize * 0.45f * ratio).coerceAtLeast(3f)
                     val lines = lineBreaker.breakLines(
                         block.runs, availableWidth, params.fontSize,
                         firstLineIndent = 0f,
-                        leftIndent = indent
+                        leftIndent = quoteIndent
                     )
                     blockLinesList.add(Paginator.BlockLines(lines, isQuoteBlock = true, sourceBlockIndex = blockIndex))
                 }

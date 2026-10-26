@@ -468,5 +468,152 @@ class BookmarkAndIndentTest {
         }
         return bookmarks
     }
+
+    @Test
+    fun testDisableFirstLineIndentOption(): Unit = runBlocking {
+        val fontPath = listOf(
+            "C:\\Windows\\Fonts\\NotoSerifSC-VF.ttf",
+            "C:\\Windows\\Fonts\\simsun.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttc"
+        ).firstOrNull { File(it).exists() }
+        assumeTrue("No CJK font found on system", fontPath != null)
+
+        val fontFile = File(fontPath!!)
+        val dummyDoc = PDDocument()
+        val pdFont = PDType0Font.load(dummyDoc, fontFile)
+        val measurer = TextMeasurer(pdFont, pdFont)
+        val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
+
+        val md = """
+            这是测试段落的第一行，用来检验首行缩进是否生效。随着文字延伸，段落会产生自动折行，呈现出版级排版质感。
+        """.trimIndent()
+        val doc = MarkdownParser().parse(md)
+
+        // 1. 默认情况（未取消首行缩进）：首行有 16pt 缩进
+        val normalParams = TypesettingParams(firstLineIndent = 16f, disableFirstLineIndent = false)
+        val normalPages = engine.typeset(doc, normalParams)
+        val normalLine1 = (normalPages.first().elements.first { it is LayoutElement.TextLine } as LayoutElement.TextLine)
+        assertEquals(normalParams.marginLeft + 16f, normalLine1.segments.first().x, 0.5f)
+
+        // 2. 取消首行缩进（disableFirstLineIndent = true）：首行缩进强制归零
+        val noIndentParams = TypesettingParams(firstLineIndent = 16f, disableFirstLineIndent = true)
+        val noIndentPages = engine.typeset(doc, noIndentParams)
+        val noIndentLine1 = (noIndentPages.first().elements.first { it is LayoutElement.TextLine } as LayoutElement.TextLine)
+        assertEquals(noIndentParams.marginLeft + 0f, noIndentLine1.segments.first().x, 0.5f)
+
+        dummyDoc.close()
+    }
+
+    @Test
+    fun testSecondaryIndentRatioQuoteAndList(): Unit = runBlocking {
+        val fontPath = listOf(
+            "C:\\Windows\\Fonts\\NotoSerifSC-VF.ttf",
+            "C:\\Windows\\Fonts\\simsun.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttc"
+        ).firstOrNull { File(it).exists() }
+        assumeTrue("No CJK font found on system", fontPath != null)
+
+        val fontFile = File(fontPath!!)
+        val dummyDoc = PDDocument()
+        val pdFont = PDType0Font.load(dummyDoc, fontFile)
+        val measurer = TextMeasurer(pdFont, pdFont)
+        val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
+
+        val md = """
+            > 这是一段用来测试引用块缩进幅度的正文内容。当辅助缩进比例被设置为20%时，版面应当显著节约横向宽度。
+            
+            - 顶级列表项
+              - 二级嵌套列表项，缩进应当紧凑贴合
+        """.trimIndent()
+        val doc = MarkdownParser().parse(md)
+
+        // 默认 100% 辅助缩进
+        val p100 = TypesettingParams(secondaryIndentRatio = 1.0f)
+        val pages100 = engine.typeset(doc, p100)
+        val quoteRule100 = pages100.first().elements.filterIsInstance<LayoutElement.RuleLine>().first()
+        val quoteText100 = pages100.first().elements.filterIsInstance<LayoutElement.TextLine>().first()
+
+        // 20% 压缩辅助缩进
+        val p20 = TypesettingParams(secondaryIndentRatio = 0.2f)
+        val pages20 = engine.typeset(doc, p20)
+        val quoteRule20 = pages20.first().elements.filterIsInstance<LayoutElement.RuleLine>().first()
+        val quoteText20 = pages20.first().elements.filterIsInstance<LayoutElement.TextLine>().first()
+
+        // 验证 20% 模式下，引用线更贴近左边距，文字缩进也更紧凑
+        assertTrue("20% quote bar X (${quoteRule20.x}) should be closer to margin than 100% (${quoteRule100.x})", quoteRule20.x < quoteRule100.x)
+        assertTrue("20% quote text X (${quoteText20.segments.first().x}) should be smaller than 100% (${quoteText100.segments.first().x})", quoteText20.segments.first().x < quoteText100.segments.first().x)
+
+        dummyDoc.close()
+    }
+
+    @Test
+    fun testQuoteBlockStrictVerticalAlignment(): Unit = runBlocking {
+        val fontPath = listOf(
+            "C:\\Windows\\Fonts\\NotoSerifSC-VF.ttf",
+            "C:\\Windows\\Fonts\\simsun.ttc",
+            "C:\\Windows\\Fonts\\msyh.ttc"
+        ).firstOrNull { File(it).exists() }
+        assumeTrue("No CJK font found on system", fontPath != null)
+
+        val fontFile = File(fontPath!!)
+        val dummyDoc = PDDocument()
+        val pdFont = PDType0Font.load(dummyDoc, fontFile)
+        val measurer = TextMeasurer(pdFont, pdFont)
+        val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
+
+        val md = """
+            > 经典引用文本，包含足够的字符长度以确保测试到严格的字顶与字底几何对齐。
+        """.trimIndent()
+        val doc = MarkdownParser().parse(md)
+
+        val params = TypesettingParams(fontSize = 12f, lineHeight = 1.5f)
+        val pages = engine.typeset(doc, params)
+        val rule = pages.first().elements.filterIsInstance<LayoutElement.RuleLine>().first()
+        val lines = pages.first().elements.filterIsInstance<LayoutElement.TextLine>()
+
+        val firstLine = lines.first()
+        val lastLine = lines.last()
+
+        val expectedTop = firstLine.topY + (firstLine.lineHeight - firstLine.fontSize) * 0.5f
+        val expectedBottom = lastLine.topY + (lastLine.lineHeight - lastLine.fontSize) * 0.5f + lastLine.fontSize
+
+        assertEquals("Quote bar top must strictly align with glyph top", expectedTop, rule.y, 0.05f)
+        assertEquals("Quote bar bottom must strictly align with glyph bottom", expectedBottom, rule.y + rule.height, 0.05f)
+
+        dummyDoc.close()
+    }
+
+    @Test
+    fun testPresetPersistenceWithNewIndentOptions() {
+        val repo = com.kindle.converter.pdf.PresetRepository(android.content.ContextWrapper(null))
+        val params = TypesettingParams(
+            disableFirstLineIndent = true,
+            secondaryIndentRatio = 0.2f
+        )
+        val json = repo.paramsToJson(params)
+        assertEquals(true, json.getBoolean("disableFirstLineIndent"))
+        assertEquals(0.2, json.getDouble("secondaryIndentRatio"), 0.01)
+
+        val restored = repo.paramsFromJson(json)
+        assertEquals(true, restored.disableFirstLineIndent)
+        assertEquals(0.2f, restored.secondaryIndentRatio, 0.01f)
+    }
+
+    @Test
+    fun testXhtmlDisableFirstLineIndentCss() {
+        val xhtmlWithIndent = com.kindle.converter.epub.XhtmlConverter.chapterDocument(
+            title = "第一章",
+            bodyXhtml = "<p>正文内容</p>",
+            disableFirstLineIndent = false
+        )
+        assertFalse(xhtmlWithIndent.contains("text-indent: 0 !important;"))
+
+        val xhtmlNoIndent = com.kindle.converter.epub.XhtmlConverter.chapterDocument(
+            title = "第一章",
+            bodyXhtml = "<p>正文内容</p>",
+            disableFirstLineIndent = true
+        )
+        assertTrue(xhtmlNoIndent.contains("<style type=\"text/css\">p { text-indent: 0 !important; }</style>"))
+    }
 }
 

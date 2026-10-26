@@ -131,6 +131,8 @@ class PresetRepository(private val context: Context) {
         put("lineHeight", p.lineHeight)
         put("paragraphSpacing", p.paragraphSpacing)
         put("firstLineIndent", p.firstLineIndent)
+        put("disableFirstLineIndent", p.disableFirstLineIndent)
+        put("secondaryIndentRatio", p.secondaryIndentRatio)
         put("textAlignment", p.textAlignment.name)
         put("forceAlign", p.forceAlign)
         put("verticalAlignment", p.verticalAlignment.name)
@@ -168,6 +170,8 @@ class PresetRepository(private val context: Context) {
             lineHeight = o.optDouble("lineHeight", 1.5).toFloat(),
             paragraphSpacing = o.optDouble("paragraphSpacing", 3.6).toFloat(),
             firstLineIndent = o.optDouble("firstLineIndent", 16.0).toFloat(),
+            disableFirstLineIndent = o.optBoolean("disableFirstLineIndent", false),
+            secondaryIndentRatio = o.optDouble("secondaryIndentRatio", 0.5).toFloat(),
             textAlignment = ta,
             forceAlign = o.optBoolean("forceAlign", true),
             verticalAlignment = va,

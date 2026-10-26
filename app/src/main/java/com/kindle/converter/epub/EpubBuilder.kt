@@ -38,6 +38,7 @@ object EpubBuilder {
         embedImages: Boolean,
         userAgent: String,
         outputFile: File,
+        disableFirstLineIndent: Boolean = false,
     ): File = withContext(Dispatchers.IO) {
         require(articles.isNotEmpty()) { "没有可写入的文章" }
 
@@ -68,7 +69,7 @@ object EpubBuilder {
             val finalBody = if (imageDownloader != null) {
                 XhtmlConverter.replaceImageUrls(body, urlToLocal)
             } else body
-            chapters.add(title to XhtmlConverter.chapterDocument(title, finalBody))
+            chapters.add(title to XhtmlConverter.chapterDocument(title, finalBody, disableFirstLineIndent))
         }
 
         // 4. 打包

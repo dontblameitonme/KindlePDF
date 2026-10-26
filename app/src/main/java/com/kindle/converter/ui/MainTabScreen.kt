@@ -25,31 +25,27 @@ import com.kindle.converter.viewmodel.WebClipperViewModel
 
 enum class MainTab(
     val title: String,
-    val subtitle: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector,
     val label: String
 ) {
     WEB(
-        title = "网页剪藏 (Web Clipper)",
-        subtitle = "批量提取文章并转为电子书",
+        title = "网页剪藏",
         selectedIcon = Icons.Filled.Language,
         unselectedIcon = Icons.Outlined.Language,
-        label = "网页剪藏"
+        label = "网页"
     ),
     FILES(
-        title = "Kindle PDF Converter",
-        subtitle = "本地文档转 6 英寸墨水屏 PDF",
+        title = "电子书排版",
         selectedIcon = Icons.Filled.Folder,
         unselectedIcon = Icons.Outlined.Folder,
-        label = "本地文档"
+        label = "排版"
     ),
     SETTINGS(
-        title = "设置与反截断规则",
-        subtitle = "用户脚本管理与全局策略",
+        title = "设置",
         selectedIcon = Icons.Filled.Settings,
         unselectedIcon = Icons.Outlined.Settings,
-        label = "设置规则"
+        label = "设置"
     )
 }
 
@@ -65,22 +61,13 @@ fun MainTabScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            text = selectedTab.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = selectedTab.subtitle,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = selectedTab.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface

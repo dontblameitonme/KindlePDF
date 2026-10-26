@@ -291,7 +291,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
     suspend fun exportEpub(
         title: String,
         author: String = "",
-        outputFile: File
+        outputFile: File,
+        disableFirstLineIndent: Boolean = false
     ): Result<File> = withContext(Dispatchers.IO) {
         try {
             val list = articles
@@ -304,7 +305,8 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
                 articles = list,
                 embedImages = webSettings.embedImages,
                 userAgent = ua,
-                outputFile = outputFile
+                outputFile = outputFile,
+                disableFirstLineIndent = disableFirstLineIndent
             )
             Result.success(file)
         } catch (t: Throwable) {

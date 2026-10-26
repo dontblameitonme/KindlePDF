@@ -96,11 +96,19 @@ object XhtmlConverter {
         .replace("\"", "&quot;")
 
     /** 生成完整章节 XHTML 文档 */
-    fun chapterDocument(title: String, bodyXhtml: String): String = buildString {
+    fun chapterDocument(
+        title: String,
+        bodyXhtml: String,
+        disableFirstLineIndent: Boolean = false
+    ): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")
         append("<!DOCTYPE html>\n")
         append("<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n")
-        append("<head><title>").append(escapeXml(title)).append("</title></head>\n")
+        append("<head><title>").append(escapeXml(title)).append("</title>\n")
+        if (disableFirstLineIndent) {
+            append("<style type=\"text/css\">p { text-indent: 0 !important; }</style>\n")
+        }
+        append("</head>\n")
         append("<body>\n")
         append("<h1>").append(escapeXml(title)).append("</h1>\n")
         append(bodyXhtml)

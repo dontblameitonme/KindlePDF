@@ -157,6 +157,16 @@ data class TypesettingParams(
     val lineHeight: Float = 1.5f,
     val paragraphSpacing: Float = 3.6f,
     val firstLineIndent: Float = 16f,
+    /**
+     * 是否取消正文段首缩进（默认关）。
+     * 开启后正文段首缩进强制为 0pt，EPUB 同步注入 text-indent: 0。
+     */
+    val disableFirstLineIndent: Boolean = false,
+    /**
+     * 辅助缩进幅度比例（默认 0.5f 即 50%，支持 20%、50%、80%、100%）。
+     * 用于大幅压低引用块、多级列表层级、代码块等元素的缩进量，最大化墨水屏版心宽度。
+     */
+    val secondaryIndentRatio: Float = 0.5f,
     val textAlignment: TextAlignment = TextAlignment.LEFT,
     /**
      * 强制对齐（默认开）。开启后在「左对齐 / 两端对齐」下，把每个段落除末行以外的所有行
