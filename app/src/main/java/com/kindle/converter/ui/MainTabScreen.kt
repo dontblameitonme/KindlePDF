@@ -1,22 +1,24 @@
 package com.kindle.converter.ui
 
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kindle.converter.ui.web.WebClipperScreen
 import com.kindle.converter.ui.web.WebSettingsScreen
@@ -30,13 +32,13 @@ enum class MainTab(
     val label: String
 ) {
     WEB(
-        title = "网页剪藏",
+        title = "网页",
         selectedIcon = Icons.Filled.Language,
         unselectedIcon = Icons.Outlined.Language,
         label = "网页"
     ),
     FILES(
-        title = "电子书排版",
+        title = "排版",
         selectedIcon = Icons.Filled.Folder,
         unselectedIcon = Icons.Outlined.Folder,
         label = "排版"
@@ -57,17 +59,37 @@ fun MainTabScreen(
     selectedTab: MainTab = MainTab.WEB,
     onTabSelected: (MainTab) -> Unit = {}
 ) {
+    val converterState by converterViewModel.uiState.collectAsState()
+    var showFontSheet by remember { mutableStateOf(false) }
+    var showPresetSheet by remember { mutableStateOf(false) }
+
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(
                 title = {
                     Text(
                         text = selectedTab.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                },
+                actions = {
+                    if (selectedTab == MainTab.FILES) {
+                        FontSelectorPillAction(
+                            fontName = converterState.fontName ?: "系统默认",
+                            onClick = { showFontSheet = true }
+                        )
+                        IconButton(onClick = { showPresetSheet = true }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Bookmarks,
+                                contentDescription = "预设",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -75,7 +97,10 @@ fun MainTabScreen(
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 0.dp
+            ) {
                 MainTab.entries.forEach { tab ->
                     val isSelected = tab == selectedTab
                     NavigationBarItem(
@@ -90,7 +115,7 @@ fun MainTabScreen(
                         label = {
                             Text(
                                 text = tab.label,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium
                             )
                         }
                     )
@@ -112,7 +137,11 @@ fun MainTabScreen(
                 MainTab.FILES -> ConverterScreen(
                     viewModel = converterViewModel,
                     modifier = Modifier.fillMaxSize(),
-                    showTopBar = false
+                    showTopBar = false,
+                    showFontSheet = showFontSheet,
+                    onShowFontSheetChange = { showFontSheet = it },
+                    showPresetSheet = showPresetSheet,
+                    onShowPresetSheetChange = { showPresetSheet = it }
                 )
                 MainTab.SETTINGS -> WebSettingsScreen(
                     viewModel = webViewModel,
@@ -120,6 +149,45 @@ fun MainTabScreen(
                     modifier = Modifier.fillMaxSize()
                 )
             }
+        }
+    }
+}
+
+/**
+ * 顶栏字体选择药丸按钮：点击直接从底部拉起字体切换面板。
+ */
+@Composable
+internal fun FontSelectorPillAction(
+    fontName: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .padding(end = 4.dp)
+            .height(34.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.FontDownload,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(
+                text = fontName,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 110.dp)
+            )
         }
     }
 }

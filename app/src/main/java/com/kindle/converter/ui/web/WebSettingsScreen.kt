@@ -1,8 +1,11 @@
 package com.kindle.converter.ui.web
 
-import android.text.format.DateFormat
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -11,19 +14,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.kindle.converter.ui.M3ExpressiveSlider
+import com.kindle.converter.ui.M3SwitchRow
+import com.kindle.converter.ui.m3GroupedItemShape
+import com.kindle.converter.viewmodel.ConverterViewModel
 import com.kindle.converter.viewmodel.WebClipperViewModel
 import com.kindle.converter.web.settings.UaMode
-import java.util.Date
-
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.ui.platform.LocalContext
-import com.kindle.converter.viewmodel.ConverterViewModel
 import kotlinx.coroutines.launch
 
+/**
+ * 设置页（Android M3 Expressive 系统设置分组风格）：
+ * 使用无描边色阶分层分组卡片，消除冗余解释文案，单屏清晰承载规则库、抓取偏好与配置备份。
+ */
 @Composable
 fun WebSettingsScreen(
     viewModel: WebClipperViewModel,
@@ -32,7 +37,6 @@ fun WebSettingsScreen(
 ) {
     val scriptInfo by viewModel.scriptInfo.collectAsState(initial = null)
     val settings by viewModel.settings.collectAsState(initial = null)
-    val scrollState = rememberScrollState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -45,7 +49,7 @@ fun WebSettingsScreen(
                     context.contentResolver.openOutputStream(uri)?.use { out ->
                         viewModel.exportSettings(out)
                     }
-                    Toast.makeText(context, "设置与排版预设已成功导出", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "配置已导出", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
@@ -61,16 +65,16 @@ fun WebSettingsScreen(
                 try {
                     val result = context.contentResolver.openInputStream(uri)?.use { input ->
                         viewModel.importSettings(input)
-                    } ?: Result.failure(Exception("无法打开文件流"))
+                    } ?: Result.failure(Exception("无法读取文件"))
 
                     if (result.isSuccess) {
                         converterViewModel?.reloadPresets()
-                        Toast.makeText(context, result.getOrNull() ?: "设置导入成功", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, result.getOrNull() ?: "配置已导入", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(context, "导入失败: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(context, "读取设置文件失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "读取失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -79,196 +83,203 @@ fun WebSettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(scrollState)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 规则库
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+        // 1. 规则库
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SettingsSectionHeader("规则库")
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("规则库", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = RoundedCornerShape(6.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text(
-                            scriptInfo?.displayVersion ?: "内置",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        Icon(
+                            imageVector = Icons.Default.Extension,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
                         )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { viewModel.updateScriptFromUrl() },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("更新规则", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            text = "内置规则",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            Text(
+                                text = scriptInfo?.displayVersion ?: "内置",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
                     }
 
-                    OutlinedButton(
-                        onClick = { viewModel.resetScriptToAsset() },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("重置规则", style = MaterialTheme.typography.labelMedium)
+                        FilledTonalButton(
+                            onClick = { viewModel.updateScriptFromUrl() },
+                            shape = CircleShape,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Text("更新", style = MaterialTheme.typography.labelMedium)
+                        }
+                        IconButton(
+                            onClick = { viewModel.resetScriptToAsset() },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.RestartAlt,
+                                contentDescription = "重置规则",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // 抓取偏好
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("抓取设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-
-                // UA 设置
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("桌面端 User-Agent", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
+        // 2. 网页抓取设置分组
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SettingsSectionHeader("网页抓取")
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val totalRows = 5
+                SettingsGroupedRow(index = 0, total = totalRows) {
+                    M3SwitchRow(
+                        label = "桌面版 UA",
                         checked = settings?.defaultUa == UaMode.DESKTOP,
                         onCheckedChange = { checked ->
                             viewModel.setDefaultUa(if (checked) UaMode.DESKTOP else UaMode.MOBILE)
                         }
                     )
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                // 图片嵌入
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("下载正文插图", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
+                SettingsGroupedRow(index = 1, total = totalRows) {
+                    M3SwitchRow(
+                        label = "下载正文插图",
                         checked = settings?.embedImages ?: true,
                         onCheckedChange = { viewModel.setEmbedImages(it) }
                     )
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                // 网页深色模式
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("网页深色模式", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
+                SettingsGroupedRow(index = 2, total = totalRows) {
+                    M3SwitchRow(
+                        label = "网页深色模式",
                         checked = settings?.webViewDarkMode ?: false,
                         onCheckedChange = { viewModel.setWebViewDarkMode(it) }
                     )
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                // 始终使用 WebView 渲染
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("全量 WebView 渲染", style = MaterialTheme.typography.bodyMedium)
-                    Switch(
+                SettingsGroupedRow(index = 3, total = totalRows) {
+                    M3SwitchRow(
+                        label = "WebView 渲染",
                         checked = settings?.alwaysUseWebView ?: false,
                         onCheckedChange = { viewModel.setAlwaysUseWebView(it) }
                     )
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                // 并发数
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("并发线程: ${settings?.concurrency ?: 3}", style = MaterialTheme.typography.bodyMedium)
-                    Slider(
-                        value = (settings?.concurrency ?: 3).toFloat(),
+                SettingsGroupedRow(index = 4, total = totalRows) {
+                    val threads = settings?.concurrency ?: 3
+                    M3ExpressiveSlider(
+                        label = "并发数",
+                        valueText = "$threads",
+                        value = threads.toFloat(),
                         onValueChange = { viewModel.setConcurrency(it.toInt()) },
                         valueRange = 1f..6f,
-                        steps = 4,
-                        modifier = Modifier.width(140.dp)
+                        stepSize = 1f
                     )
                 }
             }
         }
 
-        // 备份与恢复
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("备份与恢复", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-
+        // 3. 备份与恢复
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            SettingsSectionHeader("备份")
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Button(
-                        onClick = {
-                            exportSettingsLauncher.launch("kindle_pdf_settings.json")
-                        },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp)
+                    FilledTonalButton(
+                        onClick = { exportSettingsLauncher.launch("kindle_pdf_settings.json") },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp),
+                        shape = CircleShape
                     ) {
-                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("导出配置", style = MaterialTheme.typography.labelMedium)
+                        Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导出", style = MaterialTheme.typography.labelLarge)
                     }
 
-                    OutlinedButton(
-                        onClick = {
-                            importSettingsLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
-                        },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(8.dp)
+                    FilledTonalButton(
+                        onClick = { importSettingsLauncher.launch(arrayOf("application/json", "text/*", "*/*")) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp),
+                        shape = CircleShape
                     ) {
-                        Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("导入配置", style = MaterialTheme.typography.labelMedium)
+                        Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导入", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+    }
+}
+
+@Composable
+private fun SettingsSectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+}
+
+@Composable
+private fun SettingsGroupedRow(
+    index: Int,
+    total: Int,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        shape = m3GroupedItemShape(index, total),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            content()
         }
     }
 }

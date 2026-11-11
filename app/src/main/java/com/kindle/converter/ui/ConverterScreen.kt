@@ -2,6 +2,7 @@ package com.kindle.converter.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -9,15 +10,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -26,14 +30,39 @@ import com.kindle.converter.data.*
 import com.kindle.converter.pdf.FontManager
 import com.kindle.converter.pdf.PresetRepository
 import com.kindle.converter.viewmodel.ConverterViewModel
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
+private val SUPPORTED_EBOOK_MIMES = arrayOf(
+    "text/plain",
+    "text/markdown",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/epub+zip",
+    "application/x-mobipocket-ebook",
+    "application/vnd.amazon.ebook",
+    "application/pdf",
+    "text/html",
+    "*/*"
+)
+
+/**
+ * 电子书排版主页面：
+ * 遵循 Material Design 3 (M3 Expressive) 无边框色阶分层与渐进式折叠设计：
+ * - 多选文件队列支持随时追加/单项移除/批量清空；
+ * - 中间 4 张核心卡片（文字排版 / 缩进设置 / 版面与分页 / 净化与对齐）支持独立展开/折叠，
+ *   并通过 ConverterViewModel 持久化记忆用户上次状态；
+ * - 字体与预设管理收敛至顶栏，通过 ModalBottomSheet 轻量呼出。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConverterScreen(
     viewModel: ConverterViewModel,
     modifier: Modifier = Modifier,
-    showTopBar: Boolean = true
+    showTopBar: Boolean = true,
+    showFontSheet: Boolean = false,
+    onShowFontSheetChange: (Boolean) -> Unit = {},
+    showPresetSheet: Boolean = false,
+    onShowPresetSheetChange: (Boolean) -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -61,539 +90,165 @@ fun ConverterScreen(
         if (pending != null) saveLauncher.launch(pending.suggestedName)
     }
 
-    var showFontDialog by remember { mutableStateOf(false) }
-    var showPresetDialog by remember { mutableStateOf(false) }
-    var showAdvancedDialog by remember { mutableStateOf(false) }
+    var internalFontSheet by remember { mutableStateOf(false) }
+    var internalPresetSheet by remember { mutableStateOf(false) }
+    val isFontSheetOpen = if (showTopBar) internalFontSheet else showFontSheet
+    val setFontSheetOpen: (Boolean) -> Unit = if (showTopBar) {
+        { internalFontSheet = it }
+    } else {
+        onShowFontSheetChange
+    }
+    val isPresetSheetOpen = if (showTopBar) internalPresetSheet else showPresetSheet
+    val setPresetSheetOpen: (Boolean) -> Unit = if (showTopBar) {
+        { internalPresetSheet = it }
+    } else {
+        onShowPresetSheetChange
+    }
+
     var showPresetSaveDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
 
     Scaffold(
         modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surface,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             if (showTopBar) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 1.dp
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .statusBarsPadding()
-                            .height(48.dp)
-                            .padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                TopAppBar(
+                    title = {
                         Text(
-                            "电子书排版",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            text = "排版",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Medium
                         )
-                    }
-                }
+                    },
+                    actions = {
+                        FontSelectorPillAction(
+                            fontName = state.fontName ?: "系统默认",
+                            onClick = { setFontSheetOpen(true) }
+                        )
+                        IconButton(onClick = { setPresetSheetOpen(true) }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Bookmarks,
+                                contentDescription = "预设",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
             }
         },
         bottomBar = {
-            Surface(
-                tonalElevation = 3.dp,
-                shadowElevation = 6.dp
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    if (state.isConverting) {
-                        LinearProgressIndicator(
-                            progress = { state.conversionProgress },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                        )
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    if (state.files.isNotEmpty()) viewModel.openPreviewDialog()
-                                    else viewModel.previewSample()
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(46.dp),
-                                enabled = !state.isTypesetting && state.fontName != null,
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    if (state.isTypesetting) "生成中…"
-                                    else if (state.files.isNotEmpty()) "预览排版"
-                                    else "预览示例"
-                                )
-                            }
-
-                            Button(
-                                onClick = {
-                                    if (state.files.isNotEmpty()) viewModel.convertAll()
-                                    else filePickerLauncher.launch(arrayOf("*/*"))
-                                },
-                                modifier = Modifier
-                                    .weight(1.4f)
-                                    .height(46.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                enabled = !state.isConverting
-                            ) {
-                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(if (state.files.isNotEmpty()) "转换为 PDF (${state.files.size})" else "选择文件")
-                            }
-                        }
-                    }
+            ConverterBottomActionBar(
+                isConverting = state.isConverting,
+                progress = state.conversionProgress,
+                isTypesetting = state.isTypesetting,
+                hasFont = state.fontName != null,
+                fileCount = state.files.size,
+                onPreviewClick = {
+                    if (state.files.isNotEmpty()) viewModel.openPreviewDialog()
+                    else viewModel.previewSample()
+                },
+                onPrimaryClick = {
+                    if (state.files.isNotEmpty()) viewModel.convertAll()
+                    else filePickerLauncher.launch(SUPPORTED_EBOOK_MIMES)
                 }
-            }
+            )
         }
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 顶栏：标题与两枚轻量图标按钮 (字体 / 预设)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "电子书排版",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+            MultiFileSelectorCard(
+                files = state.files,
+                onAddFiles = { filePickerLauncher.launch(SUPPORTED_EBOOK_MIMES) },
+                onRemoveFile = { viewModel.removeFile(it) },
+                onClearFiles = { viewModel.clearFiles() }
+            )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(
-                        onClick = { showFontDialog = true },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.FontDownload, contentDescription = "字体设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+            // 1. 文字排版（对齐 / 字号 / 行距）
+            TypographySectionCard(
+                params = state.params,
+                expanded = ConverterViewModel.isExpanded(state.expandedSections, ConverterViewModel.SECTION_TYPOGRAPHY),
+                onToggle = { viewModel.toggleSectionExpanded(ConverterViewModel.SECTION_TYPOGRAPHY) },
+                onParamsChange = { viewModel.updateParams(it) }
+            )
 
-                    IconButton(
-                        onClick = { showPresetDialog = true },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = "预设管理", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+            // 2. 缩进设置（取消段首缩进 / 段首缩进 / 0%~100% 自由缩进比例）
+            IndentSectionCard(
+                params = state.params,
+                expanded = ConverterViewModel.isExpanded(state.expandedSections, ConverterViewModel.SECTION_INDENT),
+                onToggle = { viewModel.toggleSectionExpanded(ConverterViewModel.SECTION_INDENT) },
+                onParamsChange = { viewModel.updateParams(it) }
+            )
 
-            // 1. 书籍卡片 (未导入时简洁引导，导入后轻巧展示，彻底告别占用巨屏的大长框)
-            if (state.files.isEmpty()) {
-                Surface(
-                    onClick = {
-                        filePickerLauncher.launch(
-                            arrayOf(
-                                "text/plain",
-                                "text/markdown",
-                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                "application/epub+zip",
-                                "application/x-mobipocket-ebook",
-                                "application/vnd.amazon.ebook",
-                                "application/pdf",
-                                "text/html",
-                                "*/*"
-                            )
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(38.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                            }
-                        }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("点击选择文件", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            Text("支持 TXT / Markdown / EPUB / DOCX / MOBI / PDF", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            } else {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        val firstFile = state.files.first()
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                                }
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    firstFile.name,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    "${formatFileSize(firstFile.size)} · 字体: ${state.fontName ?: "系统默认"}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            TextButton(
-                                onClick = {
-                                    filePickerLauncher.launch(arrayOf("*/*"))
-                                }
-                            ) {
-                                Text("更换", style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
+            // 3. 版面与分页（纸张尺寸 / 表格模式 / 分卷 / 段距与边距）
+            LayoutSectionCard(
+                params = state.params,
+                expanded = ConverterViewModel.isExpanded(state.expandedSections, ConverterViewModel.SECTION_LAYOUT),
+                onToggle = { viewModel.toggleSectionExpanded(ConverterViewModel.SECTION_LAYOUT) },
+                onSelectPaperPreset = { viewModel.selectPreset(it) },
+                onParamsChange = { viewModel.updateParams(it) }
+            )
 
-                        // 多文件横向流 (多于 1 个文件时呈现)
-                        if (state.files.size > 1) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                itemsIndexed(state.files) { index, file ->
-                                    InputChip(
-                                        selected = false,
-                                        onClick = { },
-                                        label = { Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) },
-                                        trailingIcon = {
-                                            Icon(
-                                                Icons.Default.Close,
-                                                contentDescription = "移除",
-                                                modifier = Modifier
-                                                    .size(14.dp)
-                                                    .clickable { viewModel.removeFile(index) }
-                                            )
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // 4. 净化与对齐（强制对齐 / 清理页眉页脚 / 跳过目录 / 标题加粗 / 图片环绕）
+            RulesSectionCard(
+                params = state.params,
+                expanded = ConverterViewModel.isExpanded(state.expandedSections, ConverterViewModel.SECTION_RULES),
+                onToggle = { viewModel.toggleSectionExpanded(ConverterViewModel.SECTION_RULES) },
+                onParamsChange = { viewModel.updateParams(it) }
+            )
 
-            // 2. 核心排版主卡片 (只放 4 个最关心的阅读读感项，呼吸感充足，彻底没有杂乱感！)
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // 水平对齐：4 个优雅排版矢量图标 (左/中/右/两端)，完全无文字，彻底杜绝换行断行！
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                    ) {
-                        Row(modifier = Modifier.fillMaxWidth().height(40.dp)) {
-                            listOf(
-                                TextAlignment.LEFT to Icons.AutoMirrored.Filled.FormatAlignLeft,
-                                TextAlignment.CENTER to Icons.Default.FormatAlignCenter,
-                                TextAlignment.RIGHT to Icons.AutoMirrored.Filled.FormatAlignRight,
-                                TextAlignment.JUSTIFY to Icons.Default.FormatAlignJustify
-                            ).forEach { (alignment, icon) ->
-                                val isSelected = state.params.textAlignment == alignment
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .background(
-                                            if (isSelected) MaterialTheme.colorScheme.secondaryContainer
-                                            else androidx.compose.ui.graphics.Color.Transparent
-                                        )
-                                        .clickable { viewModel.updateParams(state.params.copy(textAlignment = alignment)) },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        icon,
-                                        contentDescription = alignment.displayName,
-                                        tint = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
-                                               else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+            ConversionFeedbackBanner(
+                errorMessage = state.errorMessage,
+                results = state.conversionResults,
+                onDismiss = { viewModel.clearFeedback() }
+            )
 
-                    // 正文字号：全宽通栏滑块
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Icon(Icons.Default.FormatSize, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
-                                Text("正文字号", style = MaterialTheme.typography.bodyMedium)
-                            }
-                            Text("${state.params.fontSize.toInt()} pt", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Slider(
-                            value = state.params.fontSize,
-                            onValueChange = { viewModel.updateParams(state.params.copy(fontSize = it)) },
-                            valueRange = 8f..24f,
-                            steps = 15,
-                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                        )
-                    }
-
-                    // 行间距：全宽通栏滑块
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Icon(Icons.Default.FormatLineSpacing, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline)
-                                Text("行间距", style = MaterialTheme.typography.bodyMedium)
-                            }
-                            Text("${String.format("%.1f", state.params.lineHeight)} x", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Slider(
-                            value = state.params.lineHeight,
-                            onValueChange = { viewModel.updateParams(state.params.copy(lineHeight = it)) },
-                            valueRange = 1.0f..2.4f,
-                            steps = 13,
-                            modifier = Modifier.fillMaxWidth().height(30.dp)
-                        )
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // 取消段首缩进：行级开关
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("取消段首缩进", style = MaterialTheme.typography.bodyMedium)
-                            Text("段落首行顶格排版，电子书同步清零 2em 缩进", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(
-                            checked = state.params.disableFirstLineIndent,
-                            onCheckedChange = {
-                                viewModel.updateParams(state.params.copy(disableFirstLineIndent = it))
-                            }
-                        )
-                    }
-
-                    // 【核心新特性】：各类缩进幅度自由自定义 (0% ~ 100% 连续滑块 + 快捷胶囊)
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            val currentPercent = (state.params.secondaryIndentRatio * 100).roundToInt()
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                                    Text("各类缩进幅度 (引用/列表/代码)", style = MaterialTheme.typography.labelMedium)
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer
-                                ) {
-                                    Text(
-                                        "$currentPercent% 压缩",
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                }
-                            }
-
-                            // 0% ~ 100% 自由连续调节滑块，支持任意自定义数值
-                            Slider(
-                                value = state.params.secondaryIndentRatio,
-                                onValueChange = {
-                                    viewModel.updateParams(state.params.copy(secondaryIndentRatio = it))
-                                },
-                                valueRange = 0f..1f,
-                                steps = 19,
-                                modifier = Modifier.fillMaxWidth().height(26.dp)
-                            )
-
-                            // 常用快捷胶囊：可快速一点即到 20%，也可以用滑块精准设置任意百分比
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                listOf(
-                                    0.2f to "20% (极紧)",
-                                    0.35f to "35%",
-                                    0.5f to "50%",
-                                    1.0f to "100%"
-                                ).forEach { (ratio, label) ->
-                                    val isMatch = kotlin.math.abs(state.params.secondaryIndentRatio - ratio) < 0.04f
-                                    Surface(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable { viewModel.updateParams(state.params.copy(secondaryIndentRatio = ratio)) },
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (isMatch) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.surfaceVariant,
-                                        border = if (isMatch) null
-                                                 else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.padding(vertical = 4.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                label,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = if (isMatch) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isMatch) MaterialTheme.colorScheme.onPrimary
-                                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. 高级规则收敛卡片 (点击展开/弹窗，低频选项不抢占主屏幕视野，彻底治愈眼花缭乱！)
-            Surface(
-                onClick = { showAdvancedDialog = true },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                        Text("高级排版规则", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            "${state.params.tableDisplayMode.displayName} · ${if (state.params.hideFrontToc) "跳过目录" else "保留目录"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
-
-            // 错误/状态通知 (若有)
-            state.errorMessage?.let { msg ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text(
-                        text = msg,
-                        modifier = Modifier.padding(10.dp),
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.height(6.dp))
         }
     }
 
-    // --- 高级排版规则弹窗 (表格、分卷、页边距、页眉清理等次要设置集中于此) ---
-    if (showAdvancedDialog) {
-        AdvancedRulesDialog(
-            params = state.params,
-            onParamsChange = { viewModel.updateParams(it) },
-            onDismiss = { showAdvancedDialog = false }
-        )
-    }
-
-    // --- 字体管理弹窗 ---
-    if (showFontDialog) {
-        FontSelectionDialog(
+    if (isFontSheetOpen) {
+        FontSelectionBottomSheet(
             fonts = state.fonts,
             selectedFontId = state.selectedFontId,
-            onSelectFont = { viewModel.selectFont(it) },
+            onSelectFont = {
+                viewModel.selectFont(it)
+                setFontSheetOpen(false)
+            },
             onDeleteFont = { viewModel.deleteFont(it) },
             onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
-            onDismiss = { showFontDialog = false }
+            onDismiss = { setFontSheetOpen(false) }
         )
     }
 
-    // --- 预设管理弹窗 ---
-    if (showPresetDialog) {
-        PresetManagementDialog(
+    if (isPresetSheetOpen) {
+        PresetSelectionBottomSheet(
             presets = state.presets,
             selectedPresetName = state.selectedPresetName,
-            onLoadPreset = { viewModel.loadPreset(it) },
+            onLoadPreset = {
+                viewModel.loadPreset(it)
+                setPresetSheetOpen(false)
+            },
             onDeletePreset = { viewModel.deletePreset(it) },
             onSavePresetClick = {
                 presetName = ""
+                setPresetSheetOpen(false)
                 showPresetSaveDialog = true
             },
-            onDismiss = { showPresetDialog = false }
+            onDismiss = { setPresetSheetOpen(false) }
         )
     }
 
-    // --- 保存预设命名弹窗 ---
     if (showPresetSaveDialog) {
         AlertDialog(
             onDismissRequest = { showPresetSaveDialog = false },
@@ -602,8 +257,9 @@ fun ConverterScreen(
                 OutlinedTextField(
                     value = presetName,
                     onValueChange = { presetName = it },
-                    label = { Text("预设名称") },
+                    placeholder = { Text("预设名称") },
                     singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -622,50 +278,15 @@ fun ConverterScreen(
         )
     }
 
-    // --- 超大文件分卷询问弹窗 ---
     state.splitPrompt?.let { prompt ->
-        var selectedVols by remember(prompt) { mutableStateOf(prompt.suggestedVolumes) }
-
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissSplitPrompt() },
-            icon = { Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-            title = { Text("是否分卷？") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "「${prompt.fileItem.name}」篇幅较长，建议分卷以提升翻页流畅度：",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(2, 3, 4, 5).forEach { count ->
-                            val label = if (count == 2) "2卷(上/下)" else if (count == 3) "3卷(上/中/下)" else "${count}卷"
-                            FilterChip(
-                                selected = selectedVols == count,
-                                onClick = { selectedVols = count },
-                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = { viewModel.confirmSplitConversion(selectedVols) }) {
-                    Text("分卷转换")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.dismissSplitPrompt() }) {
-                    Text("取消")
-                }
-            }
+        SplitVolumeDialog(
+            fileName = prompt.fileItem.name,
+            suggestedVolumes = prompt.suggestedVolumes,
+            onConfirm = { viewModel.confirmSplitConversion(it) },
+            onDismiss = { viewModel.dismissSplitPrompt() }
         )
     }
 
-    // --- 预览弹窗 ---
     if (state.showPreviewDialog) {
         PreviewDialog(
             pages = state.pages,
@@ -679,160 +300,559 @@ fun ConverterScreen(
 }
 
 /**
- * 高级排版规则弹窗：
- * 将跳过目录、清理页眉页脚、强制对齐、表格模式、分卷排版与页边距集中于此，
- * 彻底释放主屏幕视野，实现零视觉杂乱。
+ * 顶部多选文件队列卡片：
+ * - 空态引导一键调用系统多选器；
+ * - 单文件显示文件名与大小，支持右侧追加更多文件或清空；
+ * - 多文件自动展示总数/总大小，并以横向胶囊队列呈现每本书，可独立移除。
  */
 @Composable
-private fun AdvancedRulesDialog(
-    params: TypesettingParams,
-    onParamsChange: (TypesettingParams) -> Unit,
-    onDismiss: () -> Unit
+private fun MultiFileSelectorCard(
+    files: List<ConverterViewModel.FileItem>,
+    onAddFiles: () -> Unit,
+    onRemoveFile: (Int) -> Unit,
+    onClearFiles: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("高级排版规则") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+    Surface(
+        onClick = { if (files.isEmpty()) onAddFiles() },
+        enabled = files.isEmpty(),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 跳过正文前印刷目录
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("跳过正文前印刷目录", style = MaterialTheme.typography.bodyMedium)
-                        Text("直达正文，保留电子大纲书签", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(
-                        checked = params.hideFrontToc,
-                        onCheckedChange = { onParamsChange(params.copy(hideFrontToc = it)) }
+                    Icon(
+                        imageVector = when {
+                            files.isEmpty() -> Icons.Default.Add
+                            files.size == 1 -> Icons.AutoMirrored.Filled.MenuBook
+                            else -> Icons.Default.FolderCopy
+                        },
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
-                HorizontalDivider()
-
-                // 清理页眉页脚与页码
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("清理页眉页脚/页码", style = MaterialTheme.typography.bodyMedium)
-                        Text("自动识别并剔除 PDF 原版页眉页码", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(
-                        checked = params.stripHeadersFooters,
-                        onCheckedChange = { onParamsChange(params.copy(stripHeadersFooters = it)) }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            files.isEmpty() -> "导入书籍（支持多选）"
+                            files.size == 1 -> files.first().name
+                            else -> "已选 ${files.size} 个文件"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
+                    if (files.isNotEmpty()) {
+                        val totalSize = files.sumOf { it.size }
+                        Text(
+                            text = formatFileSize(totalSize),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
-                HorizontalDivider()
-
-                // 强制对齐
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("强制右页边撑满对齐", style = MaterialTheme.typography.bodyMedium)
-                        Text("微调字间距，消除行末锯齿", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(
-                        checked = params.forceAlign,
-                        onCheckedChange = { onParamsChange(params.copy(forceAlign = it)) }
-                    )
-                }
-
-                HorizontalDivider()
-
-                // 6 英寸表格呈现模式
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("表格呈现模式", style = MaterialTheme.typography.bodyMedium)
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TableDisplayMode.ALL.forEach { mode ->
-                            FilterChip(
-                                selected = params.tableDisplayMode == mode,
-                                onClick = { onParamsChange(params.copy(tableDisplayMode = mode)) },
-                                label = { Text(mode.displayName, style = MaterialTheme.typography.labelSmall) },
-                                modifier = Modifier.weight(1f)
+                if (files.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FilledTonalIconButton(
+                            onClick = onAddFiles,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "追加文件", modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(
+                            onClick = onClearFiles,
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "清空",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
-                }
-
-                HorizontalDivider()
-
-                // 分卷模式
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("长文档分卷排版", style = MaterialTheme.typography.bodyMedium)
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(
-                            VolumeSplitMode.NONE to "单本完整",
-                            VolumeSplitMode.AUTO to "智能分卷",
-                            VolumeSplitMode.TWO_VOLUMES to "分2卷"
-                        ).forEach { (mode, label) ->
-                            FilterChip(
-                                selected = params.volumeSplitMode == mode,
-                                onClick = { onParamsChange(params.copy(volumeSplitMode = mode)) },
-                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-
-                // 页边距
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("上下页边距", style = MaterialTheme.typography.bodyMedium)
-                        Text("${params.marginTop.toInt()} pt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                    Slider(
-                        value = params.marginTop,
-                        onValueChange = { onParamsChange(params.copy(marginTop = it, marginBottom = it)) },
-                        valueRange = 4f..36f,
-                        steps = 15
-                    )
-                }
-
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("左右页边距", style = MaterialTheme.typography.bodyMedium)
-                        Text("${params.marginLeft.toInt()} pt", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                    }
-                    Slider(
-                        value = params.marginLeft,
-                        onValueChange = { onParamsChange(params.copy(marginLeft = it, marginRight = it)) },
-                        valueRange = 4f..36f,
-                        steps = 15
-                    )
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("完成") }
+
+            if (files.size > 1) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    itemsIndexed(files) { index, file ->
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = file.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 128.dp)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "移除",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .size(15.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onRemoveFile(index) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
-    )
+    }
 }
 
 @Composable
-private fun FontSelectionDialog(
+private fun TypographySectionCard(
+    params: TypesettingParams,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onParamsChange: (TypesettingParams) -> Unit
+) {
+    val lineText = "${String.format("%.1f", params.lineHeight)}×"
+    val summary = "${params.textAlignment.displayName} · ${params.fontSize.toInt()}pt · $lineText"
+
+    CollapsibleTonalCard(
+        title = "文字排版",
+        summary = summary,
+        icon = Icons.Default.FormatSize,
+        expanded = expanded,
+        onToggle = onToggle
+    ) {
+        M3ConnectedIconSegments(
+            options = listOf(
+                Triple(TextAlignment.LEFT, Icons.AutoMirrored.Filled.FormatAlignLeft, "左对齐"),
+                Triple(TextAlignment.CENTER, Icons.Default.FormatAlignCenter, "居中"),
+                Triple(TextAlignment.RIGHT, Icons.AutoMirrored.Filled.FormatAlignRight, "右对齐"),
+                Triple(TextAlignment.JUSTIFY, Icons.Default.FormatAlignJustify, "两端对齐")
+            ),
+            selected = params.textAlignment,
+            onSelect = { onParamsChange(params.copy(textAlignment = it)) }
+        )
+
+        M3ExpressiveSlider(
+            label = "字号",
+            valueText = "${params.fontSize.toInt()} pt",
+            value = params.fontSize,
+            onValueChange = { onParamsChange(params.copy(fontSize = it)) },
+            valueRange = 8f..24f,
+            stepSize = 1f
+        )
+
+        M3ExpressiveSlider(
+            label = "行距",
+            valueText = lineText,
+            value = params.lineHeight,
+            onValueChange = { onParamsChange(params.copy(lineHeight = it)) },
+            valueRange = 1.0f..2.4f,
+            stepSize = 0.1f
+        )
+    }
+}
+
+@Composable
+private fun IndentSectionCard(
+    params: TypesettingParams,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onParamsChange: (TypesettingParams) -> Unit
+) {
+    val indentPercent = (params.secondaryIndentRatio * 100).roundToInt()
+    val firstPart = if (params.disableFirstLineIndent) "顶格" else "${params.firstLineIndent.toInt()}pt"
+    val summary = "$firstPart · $indentPercent%"
+
+    CollapsibleTonalCard(
+        title = "缩进设置",
+        summary = summary,
+        icon = Icons.AutoMirrored.Filled.FormatIndentIncrease,
+        expanded = expanded,
+        onToggle = onToggle
+    ) {
+        M3SwitchRow(
+            label = "取消段首缩进",
+            checked = params.disableFirstLineIndent,
+            onCheckedChange = { onParamsChange(params.copy(disableFirstLineIndent = it)) }
+        )
+
+        // 开启「取消段首缩进」时自动收起段首缩进滑块，避免相互冲突的冗余控件
+        AnimatedVisibility(visible = !params.disableFirstLineIndent) {
+            M3ExpressiveSlider(
+                label = "段首缩进",
+                valueText = "${params.firstLineIndent.toInt()} pt",
+                value = params.firstLineIndent,
+                onValueChange = { onParamsChange(params.copy(firstLineIndent = it)) },
+                valueRange = 0f..36f,
+                stepSize = 2f
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            M3ExpressiveSlider(
+                label = "引用与列表缩进",
+                valueText = "$indentPercent%",
+                value = params.secondaryIndentRatio,
+                onValueChange = { onParamsChange(params.copy(secondaryIndentRatio = it)) },
+                valueRange = 0f..1f,
+                stepSize = 0.01f
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(0.20f, 0.35f, 0.50f, 1.0f).forEach { ratio ->
+                    val pct = (ratio * 100).roundToInt()
+                    val isSelected = abs(params.secondaryIndentRatio - ratio) < 0.015f
+                    Surface(
+                        onClick = { onParamsChange(params.copy(secondaryIndentRatio = ratio)) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(28.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                        else androidx.compose.ui.graphics.Color.Transparent,
+                        border = if (isSelected) null else androidx.compose.foundation.BorderStroke(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "$pct%",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
+                                else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LayoutSectionCard(
+    params: TypesettingParams,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSelectPaperPreset: (Int) -> Unit,
+    onParamsChange: (TypesettingParams) -> Unit
+) {
+    val activePaperIndex = resolvePaperPresetIndex(params)
+    val paperLabel = when (activePaperIndex) {
+        1 -> "7英寸"
+        3 -> "A4"
+        else -> "6英寸"
+    }
+    val tableLabel = tableModeShortName(params.tableDisplayMode)
+    val summary = "$paperLabel · $tableLabel · 边距${params.marginTop.toInt()}"
+
+    CollapsibleTonalCard(
+        title = "版面与分页",
+        summary = summary,
+        icon = Icons.Default.AutoAwesomeMosaic,
+        expanded = expanded,
+        onToggle = onToggle
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("纸张尺寸", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            M3ConnectedTextSegments(
+                options = listOf(0 to "6英寸", 1 to "7英寸", 3 to "A4"),
+                selected = activePaperIndex,
+                onSelect = onSelectPaperPreset
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("表格模式", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            M3ConnectedTextSegments(
+                options = listOf(
+                    TableDisplayMode.SMART_CARD to "卡片表格",
+                    TableDisplayMode.COMPACT_GRID to "紧凑网格"
+                ),
+                selected = params.tableDisplayMode,
+                onSelect = { onParamsChange(params.copy(tableDisplayMode = it)) }
+            )
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("分卷策略", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            M3ConnectedTextSegments(
+                options = listOf(
+                    VolumeSplitMode.NONE to "不分卷",
+                    VolumeSplitMode.AUTO to "自动",
+                    VolumeSplitMode.TWO_VOLUMES to "2卷",
+                    VolumeSplitMode.THREE_VOLUMES to "3卷"
+                ),
+                selected = params.volumeSplitMode,
+                onSelect = { onParamsChange(params.copy(volumeSplitMode = it)) }
+            )
+        }
+
+        M3ExpressiveSlider(
+            label = "段落间距",
+            valueText = "${params.paragraphSpacing.toInt()} pt",
+            value = params.paragraphSpacing,
+            onValueChange = { onParamsChange(params.copy(paragraphSpacing = it)) },
+            valueRange = 0f..24f,
+            stepSize = 1f
+        )
+
+        M3ExpressiveSlider(
+            label = "上下边距",
+            valueText = "${params.marginTop.toInt()} pt",
+            value = params.marginTop,
+            onValueChange = { onParamsChange(params.copy(marginTop = it, marginBottom = it)) },
+            valueRange = 4f..36f,
+            stepSize = 2f
+        )
+
+        M3ExpressiveSlider(
+            label = "左右边距",
+            valueText = "${params.marginLeft.toInt()} pt",
+            value = params.marginLeft,
+            onValueChange = { onParamsChange(params.copy(marginLeft = it, marginRight = it)) },
+            valueRange = 4f..36f,
+            stepSize = 2f
+        )
+    }
+}
+
+@Composable
+private fun RulesSectionCard(
+    params: TypesettingParams,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onParamsChange: (TypesettingParams) -> Unit
+) {
+    val activeTags = buildList {
+        if (params.forceAlign) add("强对齐")
+        if (params.stripHeadersFooters) add("清理页眉")
+        if (params.hideFrontToc) add("跳过目录")
+    }
+    val summary = activeTags.ifEmpty { listOf("标准") }.take(2).joinToString(" · ")
+
+    CollapsibleTonalCard(
+        title = "净化与对齐",
+        summary = summary,
+        icon = Icons.Default.Tune,
+        expanded = expanded,
+        onToggle = onToggle
+    ) {
+        M3SwitchRow(
+            label = "强制右对齐",
+            checked = params.forceAlign,
+            onCheckedChange = { onParamsChange(params.copy(forceAlign = it)) }
+        )
+        M3SwitchRow(
+            label = "清理页眉页脚",
+            checked = params.stripHeadersFooters,
+            onCheckedChange = { onParamsChange(params.copy(stripHeadersFooters = it)) }
+        )
+        M3SwitchRow(
+            label = "跳过前置目录",
+            checked = params.hideFrontToc,
+            onCheckedChange = { onParamsChange(params.copy(hideFrontToc = it)) }
+        )
+        M3SwitchRow(
+            label = "标题加粗",
+            checked = params.boldHeadings,
+            onCheckedChange = { onParamsChange(params.copy(boldHeadings = it)) }
+        )
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("图片环绕", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            M3ConnectedTextSegments(
+                options = listOf(
+                    ImageWrapMode.TOP_AND_BOTTOM to "嵌入",
+                    ImageWrapMode.BEHIND_TEXT to "水印",
+                    ImageWrapMode.HIDE_IMAGES to "隐藏"
+                ),
+                selected = params.imageWrapMode,
+                onSelect = { onParamsChange(params.copy(imageWrapMode = it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConverterBottomActionBar(
+    isConverting: Boolean,
+    progress: Float,
+    isTypesetting: Boolean,
+    hasFont: Boolean,
+    fileCount: Int,
+    onPreviewClick: () -> Unit,
+    onPrimaryClick: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            if (isConverting) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(8.dp)
+                                .clip(CircleShape)
+                        )
+                        Text(
+                            text = "${(progress * 100).roundToInt()}%",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = onPreviewClick,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp),
+                        enabled = !isTypesetting && hasFont,
+                        shape = CircleShape
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isTypesetting) "生成中" else "预览",
+                            maxLines = 1
+                        )
+                    }
+
+                    Button(
+                        onClick = onPrimaryClick,
+                        modifier = Modifier
+                            .weight(1.45f)
+                            .height(46.dp),
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = if (fileCount > 0) Icons.Default.PictureAsPdf else Icons.Default.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = when {
+                                fileCount <= 0 -> "选择文件"
+                                fileCount == 1 -> "导出 PDF"
+                                else -> "导出 PDF ($fileCount)"
+                            },
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversionFeedbackBanner(
+    errorMessage: String?,
+    results: List<ConverterViewModel.ConversionResult>,
+    onDismiss: () -> Unit
+) {
+    if (errorMessage == null && results.isEmpty()) return
+
+    val hasFailure = errorMessage != null || results.any { !it.success }
+    val bgColor = if (hasFailure) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+    val fgColor = if (hasFailure) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer
+    val text = errorMessage ?: run {
+        val okCount = results.count { it.success }
+        val failList = results.filter { !it.success }
+        if (failList.isEmpty()) {
+            "已完成 $okCount 份转换"
+        } else {
+            "成功 $okCount 份，失败 ${failList.size} 份（${failList.first().error ?: "未知错误"}）"
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = bgColor,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = fgColor,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "关闭",
+                tint = fgColor,
+                modifier = Modifier
+                    .size(16.dp)
+                    .clickable(onClick = onDismiss)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FontSelectionBottomSheet(
     fonts: List<FontManager.FontEntry>,
     selectedFontId: String?,
     onSelectFont: (String) -> Unit,
@@ -843,75 +863,104 @@ private fun FontSelectionDialog(
     val isSystemSelected = selectedFontId == FontManager.SYSTEM_FONT_ID ||
         (selectedFontId == null || fonts.none { it.id == selectedFontId })
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text("字体管理") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectFont(FontManager.SYSTEM_FONT_ID) }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Text("字体", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                FilledTonalButton(
+                    onClick = onImportFont,
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(34.dp)
                 ) {
-                    RadioButton(
-                        selected = isSystemSelected,
-                        onClick = { onSelectFont(FontManager.SYSTEM_FONT_ID) }
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("系统默认字体", style = MaterialTheme.typography.bodyMedium)
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("导入", style = MaterialTheme.typography.labelMedium)
                 }
+            }
 
-                HorizontalDivider()
-
-                fonts.forEach { entry ->
-                    val selected = entry.id == selectedFontId && !isSystemSelected
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val totalRows = 1 + fonts.size
+                Surface(
+                    onClick = { onSelectFont(FontManager.SYSTEM_FONT_ID) },
+                    shape = m3GroupedItemShape(0, totalRows),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSelectFont(entry.id) }
-                            .padding(vertical = 4.dp),
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        RadioButton(
-                            selected = selected,
-                            onClick = { onSelectFont(entry.id) }
+                        Text("系统默认", style = MaterialTheme.typography.bodyMedium)
+                        Icon(
+                            imageVector = if (isSystemSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                            contentDescription = null,
+                            tint = if (isSystemSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(entry.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        IconButton(onClick = { onDeleteFont(entry.id) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
-
-                OutlinedButton(
-                    onClick = onImportFont,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("导入字体 (TTF/OTF)")
+                fonts.forEachIndexed { idx, entry ->
+                    val selected = entry.id == selectedFontId && !isSystemSelected
+                    Surface(
+                        onClick = { onSelectFont(entry.id) },
+                        shape = m3GroupedItemShape(idx + 1, totalRows),
+                        color = MaterialTheme.colorScheme.surfaceContainer
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = entry.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                imageVector = if (selected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                contentDescription = null,
+                                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            IconButton(onClick = { onDeleteFont(entry.id) }, modifier = Modifier.size(36.dp)) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "删除",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("完成") }
         }
-    )
+    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PresetManagementDialog(
+private fun PresetSelectionBottomSheet(
     presets: List<PresetRepository.ParamPreset>,
     selectedPresetName: String?,
     onLoadPreset: (String) -> Unit,
@@ -919,62 +968,129 @@ private fun PresetManagementDialog(
     onSavePresetClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text("排版预设") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (presets.isEmpty()) {
-                    Text("暂无保存的预设", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    presets.forEach { preset ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onLoadPreset(preset.name)
-                                    onDismiss()
-                                }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                Text("预设", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                FilledTonalButton(
+                    onClick = onSavePresetClick,
+                    shape = CircleShape,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("保存当前", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            if (presets.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "暂无预设",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    presets.forEachIndexed { idx, preset ->
+                        val selected = preset.name == selectedPresetName
+                        Surface(
+                            onClick = { onLoadPreset(preset.name) },
+                            shape = m3GroupedItemShape(idx, presets.size),
+                            color = MaterialTheme.colorScheme.surfaceContainer
                         ) {
-                            Text(
-                                preset.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (preset.name == selectedPresetName) FontWeight.Bold else FontWeight.Normal,
-                                color = if (preset.name == selectedPresetName) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            IconButton(onClick = { onDeletePreset(preset.name) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "删除", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = preset.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (selected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                                IconButton(onClick = { onDeletePreset(preset.name) }, modifier = Modifier.size(36.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "删除",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
 
-                Spacer(modifier = Modifier.height(8.dp))
+@Composable
+private fun SplitVolumeDialog(
+    fileName: String,
+    suggestedVolumes: Int,
+    onConfirm: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedVols by remember(fileName) { mutableStateOf(suggestedVolumes) }
 
-                Button(
-                    onClick = {
-                        onDismiss()
-                        onSavePresetClick()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("保存当前参数为预设")
-                }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+        title = { Text("分卷导出") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "「$fileName」篇幅较长",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                M3ConnectedTextSegments(
+                    options = listOf(2 to "2卷", 3 to "3卷", 4 to "4卷", 5 to "5卷"),
+                    selected = selectedVols,
+                    onSelect = { selectedVols = it }
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
+            Button(onClick = { onConfirm(selectedVols) }, shape = CircleShape) {
+                Text("分卷转换")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }
@@ -992,7 +1108,7 @@ private fun PreviewDialog(
 
     Dialog(onDismissRequest = onClose) {
         Surface(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
             modifier = Modifier
                 .fillMaxWidth(0.98f)
@@ -1002,11 +1118,11 @@ private fun PreviewDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("排版预览 (${pages.size} 页)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("${pages.size} 页", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         FilterChip(
                             selected = multiPage,
@@ -1025,7 +1141,7 @@ private fun PreviewDialog(
                     }
                 } else if (pages.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("无内容可预览")
+                        Text("无预览内容")
                     }
                 } else if (multiPage) {
                     val pageGroupStart = (currentPageIndex / 5) * 5
@@ -1034,7 +1150,7 @@ private fun PreviewDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
                             .horizontalScroll(rowScroll)
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1044,14 +1160,15 @@ private fun PreviewDialog(
                             val isCurrent = i == currentPageIndex
                             Column(
                                 modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(
                                         if (isCurrent) MaterialTheme.colorScheme.primaryContainer
-                                        else MaterialTheme.colorScheme.surface
+                                        else MaterialTheme.colorScheme.surfaceContainer
                                     )
                                     .padding(6.dp)
                                     .clickable { onPageChange(i) }
                             ) {
-                                Text("第 ${i + 1} 页", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 4.dp))
+                                Text("P${i + 1}", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(bottom = 4.dp))
                                 Box(modifier = Modifier.width(180.dp).height(240.dp)) {
                                     PreviewCanvas(page = page, typeface = typeface, modifier = Modifier.fillMaxSize())
                                 }
@@ -1064,7 +1181,7 @@ private fun PreviewDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -1073,35 +1190,33 @@ private fun PreviewDialog(
                             typeface = typeface,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(color = androidx.compose.ui.graphics.Color.White, shape = RoundedCornerShape(4.dp))
+                                .background(color = androidx.compose.ui.graphics.Color.White, shape = RoundedCornerShape(6.dp))
                         )
                     }
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(8.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextButton(
+                        IconButton(
                             onClick = { onPageChange((currentPageIndex - 1).coerceAtLeast(0)) },
                             enabled = currentPageIndex > 0
                         ) {
-                            Icon(Icons.Default.ChevronLeft, contentDescription = null)
-                            Text("上一页")
+                            Icon(Icons.Default.ChevronLeft, contentDescription = "上一页")
                         }
                         Text(
-                            "第 ${currentPageIndex + 1} / ${pages.size} 页",
+                            text = "${currentPageIndex + 1} / ${pages.size}",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.SemiBold
                         )
-                        TextButton(
+                        IconButton(
                             onClick = { onPageChange((currentPageIndex + 1).coerceAtMost(pages.size - 1)) },
                             enabled = currentPageIndex < pages.size - 1
                         ) {
-                            Text("下一页")
-                            Icon(Icons.Default.ChevronRight, contentDescription = null)
+                            Icon(Icons.Default.ChevronRight, contentDescription = "下一页")
                         }
                     }
                 }
@@ -1110,10 +1225,22 @@ private fun PreviewDialog(
     }
 }
 
+private fun resolvePaperPresetIndex(params: TypesettingParams): Int {
+    val presets = TypesettingParams.KINDLE_PRESETS
+    if (abs(params.pageWidth - TypesettingParams.mmToPoints(presets[1].widthMm)) < 2f) return 1
+    if (abs(params.pageWidth - TypesettingParams.mmToPoints(presets[3].widthMm)) < 5f) return 3
+    return 0
+}
+
+private fun tableModeShortName(mode: TableDisplayMode): String = when (mode) {
+    TableDisplayMode.SMART_CARD -> "卡片表格"
+    TableDisplayMode.COMPACT_GRID -> "紧凑网格"
+}
+
 private fun formatFileSize(bytes: Long): String {
     return when {
         bytes < 1024 -> "$bytes B"
         bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-        else -> "${bytes / (1024 * 1024)} MB"
+        else -> String.format("%.1f MB", bytes / (1024f * 1024f))
     }
 }

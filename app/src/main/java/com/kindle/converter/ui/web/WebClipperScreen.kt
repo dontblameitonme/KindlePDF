@@ -1,18 +1,19 @@
 package com.kindle.converter.ui.web
 
-import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -20,6 +21,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -27,9 +30,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.core.content.FileProvider
-import com.kindle.converter.data.TypesettingParams
-import com.kindle.converter.pdf.FontManager
+import com.kindle.converter.ui.m3GroupedItemShape
 import com.kindle.converter.viewmodel.ConverterViewModel
 import com.kindle.converter.viewmodel.WebClipperViewModel
 import com.kindle.converter.web.model.FetchMode
@@ -39,7 +40,11 @@ import com.kindle.converter.web.model.WebArticle
 import kotlinx.coroutines.launch
 import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 网页剪藏主页面（Material 3 Expressive 风格）：
+ * 顶部采用搜索胶囊输入区，中部为无描边分组章节列表（单行溢出菜单替换多排图标），
+ * 底部保留双出口（EPUB / PDF）导出药丸栏，全程去除冗余引导文字。
+ */
 @Composable
 fun WebClipperScreen(
     viewModel: WebClipperViewModel,
@@ -53,7 +58,6 @@ fun WebClipperScreen(
     val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
-    var showPdfConfirmDialog by remember { mutableStateOf(false) }
     var isExporting by remember { mutableStateOf(false) }
     var exportStatusText by remember { mutableStateOf("") }
 
@@ -73,25 +77,26 @@ fun WebClipperScreen(
         }
     }
 
-    // EPUB 导出 SAF Launcher
     val epubSaveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/epub+zip")
     ) { uri ->
         if (uri != null) {
             scope.launch {
                 isExporting = true
-                exportStatusText = "正在生成 EPUB 电子书…"
+                exportStatusText = "正在生成 EPUB"
                 val tempFile = File(context.cacheDir, "web_${System.currentTimeMillis()}.epub")
-                val res = viewModel.exportEpub(
-                    title = state.bookTitle.ifBlank { state.links.firstOrNull { it.status is LinkStatus.Success }?.let { (it.status as LinkStatus.Success).article.title } ?: "网页精选集" },
-                    outputFile = tempFile
-                )
+                val defaultTitle = state.bookTitle.ifBlank {
+                    state.links.firstOrNull { it.status is LinkStatus.Success }
+                        ?.let { (it.status as LinkStatus.Success).article.title }
+                        ?: "网页精选集"
+                }
+                val res = viewModel.exportEpub(title = defaultTitle, outputFile = tempFile)
                 if (res.isSuccess) {
                     try {
                         context.contentResolver.openOutputStream(uri)?.use { os ->
                             tempFile.inputStream().use { it.copyTo(os) }
                         }
-                        Toast.makeText(context, "EPUB 导出成功！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "EPUB 导出成功", Toast.LENGTH_SHORT).show()
                     } catch (e: Exception) {
                         Toast.makeText(context, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
                     }
@@ -104,14 +109,13 @@ fun WebClipperScreen(
         }
     }
 
-    // PDF 导出 SAF Launcher
     val pdfSaveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/pdf")
     ) { uri ->
         if (uri != null) {
             scope.launch {
                 isExporting = true
-                exportStatusText = "正在转换排版…"
+                exportStatusText = "正在转换 PDF"
                 val tempPdf = File(context.cacheDir, "web_kindle_${System.currentTimeMillis()}.pdf")
                 val fontManager = converterViewModel.fontManager
                 val selectedId = converterViewModel.uiState.value.selectedFontId
@@ -126,7 +130,7 @@ fun WebClipperScreen(
                         context.contentResolver.openOutputStream(uri)?.use { os ->
                             file.inputStream().use { it.copyTo(os) }
                         }
-                        Toast.makeText(context, "Kindle PDF 导出成功（共 $pages 页）！", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "导出成功（$pages 页）", Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
                         Toast.makeText(context, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
                     }
@@ -149,175 +153,162 @@ fun WebClipperScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
-        // 链接输入与主操作卡片
-        ElevatedCard(
+        // 1. 胶囊式链接输入区
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp)
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
         ) {
-            Column(modifier = Modifier.padding(14.dp)) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text("粘贴链接", style = MaterialTheme.typography.bodyMedium)
+                    },
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { onExecuteExtract() })
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Link,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "网页链接",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // 剪贴板一键粘贴
-                    FilledTonalButton(
-                        onClick = {
-                            val clip = clipboardManager.getText()?.text
-                            if (!clip.isNullOrBlank()) {
-                                inputText = if (inputText.isBlank()) clip else "$inputText\n$clip"
-                                Toast.makeText(context, "已粘贴剪贴板内容", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "剪贴板为空", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.height(30.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("粘贴", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = {
-                        Text(
-                            "输入或粘贴链接（支持多行批量）",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    },
-                    minLines = 2,
-                    maxLines = 4,
-                    shape = RoundedCornerShape(12.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onExecuteExtract() })
-                )
-
-                Spacer(Modifier.height(10.dp))
-
-                Button(
-                    onClick = onExecuteExtract,
-                    enabled = inputText.isNotBlank() && !state.isWorking,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(44.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (detectedUrlCount > 0) "提取正文 ($detectedUrlCount)" else "提取正文",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (inputText.isNotBlank() || state.links.isNotEmpty()) {
-                        OutlinedButton(
+                        Surface(
                             onClick = {
-                                inputText = ""
-                                viewModel.clearAll()
+                                val clip = clipboardManager.getText()?.text
+                                if (!clip.isNullOrBlank()) {
+                                    inputText = if (inputText.isBlank()) clip else "$inputText\n$clip"
+                                } else {
+                                    Toast.makeText(context, "剪贴板为空", Toast.LENGTH_SHORT).show()
+                                }
                             },
-                            enabled = !state.isWorking,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
                             modifier = Modifier.height(32.dp)
                         ) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("清空", style = MaterialTheme.typography.labelSmall)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Text("粘贴", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
-                        Spacer(Modifier.width(8.dp))
+
+                        Surface(
+                            onClick = {
+                                val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
+                                activeBrowserUrl = url
+                            },
+                            enabled = !state.isWorking,
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Text("浏览器", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        if (inputText.isNotBlank() || state.links.isNotEmpty()) {
+                            IconButton(
+                                onClick = {
+                                    inputText = ""
+                                    viewModel.clearAll()
+                                },
+                                enabled = !state.isWorking,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.DeleteOutline,
+                                    contentDescription = "清空",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                        }
                     }
 
-                    OutlinedButton(
-                        onClick = {
-                            val url = inputText.trim().lines().firstOrNull { it.isNotBlank() } ?: "https://www.zhihu.com"
-                            activeBrowserUrl = url
-                        },
-                        enabled = !state.isWorking,
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(32.dp)
+                    Button(
+                        onClick = onExecuteExtract,
+                        enabled = inputText.isNotBlank() && !state.isWorking,
+                        shape = CircleShape,
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                        modifier = Modifier.height(34.dp)
                     ) {
-                        Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("内置浏览器", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            text = if (detectedUrlCount > 0) "提取 ($detectedUrlCount)" else "提取",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        // 提取文章列表标题
+        // 2. 列表标题与状态动作
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .padding(horizontal = 4.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "文章章节列表（${state.links.size} 篇）",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                text = if (state.links.isEmpty()) "文章队列" else "${state.links.size} 篇文章",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
             )
             if (state.links.any { it.status is LinkStatus.Idle || it.status is LinkStatus.Error }) {
                 TextButton(
                     onClick = { viewModel.fetchRemaining() },
-                    enabled = !state.isWorking
+                    enabled = !state.isWorking,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
                 ) {
-                    Text("抓取未完成项", style = MaterialTheme.typography.labelSmall)
+                    Text("重试失败", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
 
-        // 链接卡片列表
+        // 3. 分组章节列表
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
-            items(state.links, key = { it.id }) { item ->
-                LinkItemCard(
+            itemsIndexed(state.links, key = { _, item -> item.id }) { index, item ->
+                LinkItemRow(
                     item = item,
-                    index = state.links.indexOf(item),
+                    index = index,
                     total = state.links.size,
                     enabled = !state.isWorking,
                     onClick = {
@@ -334,40 +325,46 @@ fun WebClipperScreen(
 
             if (state.links.isEmpty()) {
                 item {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 40.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(vertical = 56.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        Icon(
+                            imageVector = Icons.Default.Language,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                            modifier = Modifier.size(34.dp)
+                        )
                         Text(
-                            "暂无链接。\n粘贴网址后点击「添加并提取」，\n自动拦截 App 弹窗、去广告并生成电子书。",
+                            text = "暂无文章",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
         }
 
-        // 正在处理状态
+        // 4. 进度条（抓取/导出中）
         if (state.isWorking || isExporting) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 6.dp),
                 color = MaterialTheme.colorScheme.secondaryContainer,
-                shape = RoundedCornerShape(12.dp)
+                shape = CircleShape
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.5.dp)
-                    Spacer(Modifier.width(10.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Text(
-                        if (isExporting) exportStatusText else state.workingMessage.ifBlank { "正在提取正文…" },
+                        text = if (isExporting) exportStatusText else state.workingMessage.ifBlank { "提取中" },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
@@ -375,104 +372,75 @@ fun WebClipperScreen(
             }
         }
 
-        // 底部双出口操作区
+        // 5. 底部双出口药丸栏
         val successCount = viewModel.articles.size
         if (successCount > 0) {
-            ElevatedCard(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 4.dp),
-                shape = RoundedCornerShape(16.dp)
+                    .padding(top = 6.dp, bottom = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    val currentFontName = converterViewModel.fontManager.getCurrentEntry()?.name ?: "思源黑体"
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                val params = converterViewModel.uiState.value.params
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "就绪 $successCount 篇",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    FilterChip(
+                        selected = params.hideFrontToc,
+                        onClick = { converterViewModel.updateParams(params.copy(hideFrontToc = !params.hideFrontToc)) },
+                        label = { Text("跳过目录", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.height(28.dp)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
+                            epubSaveLauncher.launch("$defaultName.epub")
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp),
+                        enabled = !state.isWorking && !isExporting,
+                        shape = CircleShape
                     ) {
-                        Text(
-                            "已成功提取 $successCount 篇文章",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            "排版字体: $currentFontName",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("EPUB", maxLines = 1)
                     }
 
-                    val params = converterViewModel.uiState.value.params
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Button(
+                        onClick = {
+                            val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
+                            pdfSaveLauncher.launch("$defaultName.pdf")
+                        },
+                        modifier = Modifier
+                            .weight(1.45f)
+                            .height(46.dp),
+                        enabled = !state.isWorking && !isExporting,
+                        shape = CircleShape
                     ) {
-                        Text(
-                            "不显示正文前的目录",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Switch(
-                            checked = params.hideFrontToc,
-                            onCheckedChange = { checked ->
-                                converterViewModel.updateParams(params.copy(hideFrontToc = checked))
-                            }
-                        )
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // 出口 1：Kindle PDF
-                        Button(
-                            onClick = {
-                                val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
-                                pdfSaveLauncher.launch("$defaultName.pdf")
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp),
-                            enabled = !state.isWorking && !isExporting,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 6.dp)
-                        ) {
-                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("转为 Kindle PDF", style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        }
-
-                        // 出口 2：标准 EPUB
-                        OutlinedButton(
-                            onClick = {
-                                val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
-                                epubSaveLauncher.launch("$defaultName.epub")
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp),
-                            enabled = !state.isWorking && !isExporting,
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 6.dp)
-                        ) {
-                            Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("导出为 EPUB", style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        }
+                        Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("导出 PDF", maxLines = 1)
                     }
                 }
             }
         }
     }
 
-    // 正文纯净预览弹窗
     val previewArticle = state.previewArticle
     if (previewArticle != null) {
         WebArticlePreviewDialog(
@@ -481,7 +449,6 @@ fun WebClipperScreen(
         )
     }
 
-    // Via 风格轻量级内置浏览器
     val browserUrl = activeBrowserUrl
     if (browserUrl != null) {
         InAppBrowserDialog(
@@ -497,7 +464,7 @@ fun WebClipperScreen(
 }
 
 @Composable
-private fun LinkItemCard(
+private fun LinkItemRow(
     item: LinkItem,
     index: Int,
     total: Int,
@@ -510,134 +477,123 @@ private fun LinkItemCard(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
-    ElevatedCard(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = item.status is LinkStatus.Success) { onClick() },
-        shape = RoundedCornerShape(12.dp)
+        shape = m3GroupedItemShape(index, total),
+        color = MaterialTheme.colorScheme.surfaceContainer
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 11.dp, bottom = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center
             ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = RoundedCornerShape(6.dp)
-                ) {
-                    Text(
-                        "第 ${index + 1} 章",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
                 Text(
-                    text = item.domain,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
+                    text = String.format("%02d", index + 1),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                val primaryTitle = when (val status = item.status) {
+                    is LinkStatus.Success -> status.article.title
+                    is LinkStatus.Error -> status.message
+                    else -> item.url
+                }
+                Text(
+                    text = primaryTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = if (item.status is LinkStatus.Error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                StatusBadge(item.status)
-            }
 
-            when (val status = item.status) {
-                is LinkStatus.Success -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    StatusDot(item.status)
                     Text(
-                        text = status.article.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp)
+                        text = item.domain,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    if (status.article.possiblyTruncated) {
-                        Row(
-                            modifier = Modifier.padding(top = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Outlined.WarningAmber,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                "正文疑似被截断，可点右下角菜单选择「WebView 渲染」强力展开",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-                }
-                is LinkStatus.Error -> {
-                    Column(modifier = Modifier.padding(top = 4.dp)) {
-                        Text(
-                            text = status.message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                    if (item.status is LinkStatus.Success && item.status.article.possiblyTruncated) {
+                        Icon(
+                            Icons.Outlined.WarningAmber,
+                            contentDescription = "可能截断",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(13.dp)
                         )
-                        Spacer(Modifier.height(4.dp))
-                        OutlinedButton(
-                            onClick = { onOpenInBrowser(item.url) },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.height(30.dp)
-                        ) {
-                            Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("在内置浏览器中打开验证", style = MaterialTheme.typography.labelSmall)
-                        }
                     }
                 }
-                else -> {}
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box {
-                    IconButton(onClick = { menuExpanded = true }, enabled = enabled) {
-                        Icon(Icons.Default.Refresh, contentDescription = "重新抓取", modifier = Modifier.size(18.dp))
+            if (item.status is LinkStatus.Error) {
+                FilledTonalIconButton(
+                    onClick = { onOpenInBrowser(item.url) },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(Icons.Default.Public, contentDescription = "浏览器", modifier = Modifier.size(16.dp))
+                }
+            }
+
+            Box {
+                IconButton(onClick = { menuExpanded = true }, enabled = enabled, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "更多",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("内置浏览器打开") },
+                        onClick = { menuExpanded = false; onOpenInBrowser(item.url) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("重新抓取") },
+                        onClick = { menuExpanded = false; onRefetch(FetchMode.DEFAULT) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("桌面版抓取") },
+                        onClick = { menuExpanded = false; onRefetch(FetchMode.DESKTOP) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("WebView 渲染") },
+                        onClick = { menuExpanded = false; onRefetch(FetchMode.WEBVIEW) }
+                    )
+                    HorizontalDivider()
+                    if (index > 0) {
+                        DropdownMenuItem(
+                            text = { Text("上移") },
+                            onClick = { menuExpanded = false; onMove(-1) }
+                        )
                     }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    if (index < total - 1) {
                         DropdownMenuItem(
-                            text = { Text("在内置浏览器中打开（所见即所得）") },
-                            onClick = { menuExpanded = false; onOpenInBrowser(item.url) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("默认重新抓取") },
-                            onClick = { menuExpanded = false; onRefetch(FetchMode.DEFAULT) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("强制桌面 UA（PC版网页）") },
-                            onClick = { menuExpanded = false; onRefetch(FetchMode.DESKTOP) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("后台 WebView 渲染（自动展开/拦截App）") },
-                            onClick = { menuExpanded = false; onRefetch(FetchMode.WEBVIEW) }
+                            text = { Text("下移") },
+                            onClick = { menuExpanded = false; onMove(1) }
                         )
                     }
-                }
-                IconButton(onClick = { onMove(-1) }, enabled = enabled && index > 0) {
-                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "上移", modifier = Modifier.size(18.dp))
-                }
-                IconButton(onClick = { onMove(1) }, enabled = enabled && index < total - 1) {
-                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "下移", modifier = Modifier.size(18.dp))
-                }
-                IconButton(onClick = onRemove, enabled = enabled) {
-                    Icon(Icons.Default.Delete, contentDescription = "删除", modifier = Modifier.size(18.dp))
+                    DropdownMenuItem(
+                        text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                        onClick = { menuExpanded = false; onRemove() }
+                    )
                 }
             }
         }
@@ -645,22 +601,26 @@ private fun LinkItemCard(
 }
 
 @Composable
-private fun StatusBadge(status: LinkStatus) {
+private fun StatusDot(status: LinkStatus) {
     when (status) {
-        is LinkStatus.Idle -> Text(
-            "等待", style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+        is LinkStatus.Fetching -> CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
+        is LinkStatus.Success -> Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF4ADE80))
         )
-        is LinkStatus.Fetching -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-        is LinkStatus.Success -> Text(
-            "成功", style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.Bold
+        is LinkStatus.Error -> Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.error)
         )
-        is LinkStatus.Error -> Text(
-            "失败", style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error,
-            fontWeight = FontWeight.Bold
+        is LinkStatus.Idle -> Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.outline)
         )
     }
 }
@@ -672,7 +632,7 @@ private fun WebArticlePreviewDialog(
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp,
             modifier = Modifier
@@ -685,32 +645,21 @@ private fun WebArticlePreviewDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            "纯净正文预览",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
+                    Text(
+                        text = article.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "关闭")
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
-
                 Text(
-                    article.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Text(
-                    article.url,
+                    text = article.url,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -734,17 +683,6 @@ private fun WebArticlePreviewDialog(
                         style = MaterialTheme.typography.bodyMedium,
                         lineHeight = MaterialTheme.typography.bodyMedium.lineHeight * 1.4f
                     )
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    Button(onClick = onDismiss) {
-                        Text("关闭预览")
-                    }
                 }
             }
         }

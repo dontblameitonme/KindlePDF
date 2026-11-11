@@ -615,5 +615,38 @@ class BookmarkAndIndentTest {
         )
         assertTrue(xhtmlNoIndent.contains("<style type=\"text/css\">p { text-indent: 0 !important; }</style>"))
     }
+
+    @Test
+    fun testSectionExpandedDefaultAndPersistence() {
+        val vm = com.kindle.converter.viewmodel.ConverterViewModel
+        val emptyMap = emptyMap<String, Boolean>()
+        assertTrue(vm.isExpanded(emptyMap, vm.SECTION_TYPOGRAPHY))
+        assertTrue(vm.isExpanded(emptyMap, vm.SECTION_INDENT))
+        assertFalse(vm.isExpanded(emptyMap, vm.SECTION_LAYOUT))
+        assertFalse(vm.isExpanded(emptyMap, vm.SECTION_RULES))
+
+        val tempDir = kotlin.io.path.createTempDirectory("kindlepdf_test").toFile()
+        try {
+            val testContext = object : android.content.ContextWrapper(null) {
+                override fun getFilesDir(): File = tempDir
+            }
+            val repo = com.kindle.converter.pdf.PresetRepository(testContext)
+            val savedStates = mapOf(
+                vm.SECTION_TYPOGRAPHY to false,
+                vm.SECTION_INDENT to true,
+                vm.SECTION_LAYOUT to true,
+                vm.SECTION_RULES to true
+            )
+            repo.saveSectionExpanded(savedStates)
+
+            val loaded = repo.loadSectionExpanded()
+            assertFalse(vm.isExpanded(loaded, vm.SECTION_TYPOGRAPHY))
+            assertTrue(vm.isExpanded(loaded, vm.SECTION_INDENT))
+            assertTrue(vm.isExpanded(loaded, vm.SECTION_LAYOUT))
+            assertTrue(vm.isExpanded(loaded, vm.SECTION_RULES))
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
 }
 

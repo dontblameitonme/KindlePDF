@@ -88,9 +88,30 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         val errorMessage: String? = null,
         val statusMessage: String? = null,
         val splitPrompt: SplitPrompt? = null,
-        /** 各区域折叠状态。key: "fonts" | "params" | "presets"，缺失/true=展开 */
+        /** 各排版卡片折叠状态。key: "typography" | "indent" | "layout" | "rules" */
         val expandedSections: Map<String, Boolean> = emptyMap()
     )
+
+    companion object {
+        const val SECTION_TYPOGRAPHY = "typography"
+        const val SECTION_INDENT = "indent"
+        const val SECTION_LAYOUT = "layout"
+        const val SECTION_RULES = "rules"
+
+        val DEFAULT_SECTION_EXPANDED: Map<String, Boolean> = mapOf(
+            SECTION_TYPOGRAPHY to true,
+            SECTION_INDENT to true,
+            SECTION_LAYOUT to false,
+            SECTION_RULES to false
+        )
+
+        /** 查询指定卡片默认展开状态（未记录时使用全局默认） */
+        fun defaultExpandedFor(key: String): Boolean = DEFAULT_SECTION_EXPANDED[key] ?: true
+
+        /** 根据已保存映射与默认值，计算卡片当前是否应展开 */
+        fun isExpanded(expandedSections: Map<String, Boolean>, key: String): Boolean =
+            expandedSections[key] ?: defaultExpandedFor(key)
+    }
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -129,8 +150,8 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleSectionExpanded(key: String) {
         val current = _uiState.value.expandedSections
-        val newValue = !(current[key] ?: true)
-        val updated = current.toMutableMap().apply { put(key, newValue) }
+        val currentlyExpanded = isExpanded(current, key)
+        val updated = current.toMutableMap().apply { put(key, !currentlyExpanded) }
         presetRepo.saveSectionExpanded(updated)
         _uiState.update { it.copy(expandedSections = updated) }
     }
@@ -139,19 +160,25 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun addFiles(uris: List<Uri>) {
         val app = getApplication<Application>()
-        val newFiles = uris.map { uri ->
-            // 持久化读写权限，保证稍后能在同目录创建输出文件
-            try {
-                app.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (_: Exception) { /* 部分提供器不支持持久化写权限，忽略 */ }
-            val name = getFileName(uri)
-            val size = getFileSize(uri)
-            FileItem(uri, name, size)
+        val existingUris = _uiState.value.files.map { it.uri }.toSet()
+        val newFiles = uris
+            .filter { it !in existingUris }
+            .distinct()
+            .map { uri ->
+                // 持久化读写权限，保证稍后能在同目录创建输出文件
+                try {
+                    app.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: Exception) { /* 部分提供器不支持持久化写权限，忽略 */ }
+                val name = getFileName(uri)
+                val size = getFileSize(uri)
+                FileItem(uri, name, size)
+            }
+        if (newFiles.isNotEmpty()) {
+            _uiState.update { it.copy(files = it.files + newFiles) }
         }
-        _uiState.update { it.copy(files = it.files + newFiles) }
     }
 
     fun removeFile(index: Int) {
@@ -856,6 +883,10 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             if (sizeIndex >= 0 && it.moveToFirst()) return it.getLong(sizeIndex)
         }
         return 0
+    }
+
+    fun clearFeedback() {
+        _uiState.update { it.copy(conversionResults = emptyList(), errorMessage = null, statusMessage = null) }
     }
 
     override fun onCleared() {
