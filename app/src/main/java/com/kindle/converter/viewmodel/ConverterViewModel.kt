@@ -355,6 +355,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val fileItem = state.files.first()
                 val bytes = readUriBytes(fileItem.uri)
+                require(bytes.isNotEmpty()) { "无法读取文件内容或文件为空" }
                 val ctx = ParseContext(
                     stripHeadersFooters = state.params.stripHeadersFooters,
                     imageWrapMode = state.params.imageWrapMode,
@@ -363,7 +364,8 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                 val document = DocumentParser.parse(fileItem.name, bytes, ctx, imageResolver)
                 cachedDocument = document
 
-                val fontInfo = fontManager.getCurrentFontInfo()!!
+                val fontInfo = fontManager.getCurrentFontInfo()
+                    ?: error("字体加载失败，请重新导入或选择字体")
                 val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
                 val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
                 val pages = engine.typeset(document, state.params)
@@ -412,7 +414,8 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 val document = buildSampleDocument()
-                val fontInfo = fontManager.getCurrentFontInfo()!!
+                val fontInfo = fontManager.getCurrentFontInfo()
+                    ?: error("字体加载失败，请重新导入或选择字体")
                 val measurer = TextMeasurer(fontInfo.font, fontInfo.boldFont)
                 val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
                 val pages = engine.typeset(document, state.params)
@@ -534,7 +537,13 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch(Dispatchers.Default) {
             val results = mutableListOf<ConversionResult>()
-            val fontInfo = fontManager.getCurrentFontInfo()!!
+            val fontInfo = fontManager.getCurrentFontInfo()
+            if (fontInfo == null) {
+                _uiState.update {
+                    it.copy(isConverting = false, errorMessage = "字体加载失败，请重新导入或选择字体")
+                }
+                return@launch
+            }
             val params = state.params
             val app = getApplication<Application>()
             val ctx = ParseContext(
@@ -547,6 +556,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                 var parsedDoc: Document? = null
                 try {
                     val bytes = readUriBytes(fileItem.uri)
+                    require(bytes.isNotEmpty()) { "无法读取文件内容或文件为空" }
                     val document = DocumentParser.parse(fileItem.name, bytes, ctx, imageResolver)
                     parsedDoc = document
 
@@ -711,15 +721,18 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         val bookmarks = createBookmarks(document, pages, typesetResult.blockPageMap)
 
         val tempFile = File(app.cacheDir, "out_${System.currentTimeMillis()}_${kotlin.math.abs(outName.hashCode())}.pdf")
-        val generated = pdfGenerator.generate(pages, bookmarks, tempFile)
+        val genResult = pdfGenerator.generateResult(pages, bookmarks, tempFile)
 
-        if (generated && tempFile.exists()) {
+        if (genResult.isSuccess && tempFile.exists() && tempFile.length() > 0L) {
             val outUri = resolveOutputUri(fileItem.uri, outName)
             if (outUri != null) {
                 var written = false
                 try {
-                    app.contentResolver.openOutputStream(outUri)?.use { os ->
-                        tempFile.inputStream().use { it.copyTo(os) }
+                    val os = app.contentResolver.openOutputStream(outUri)
+                        ?: error("无法打开目标文件写入流")
+                    os.use { out ->
+                        tempFile.inputStream().use { it.copyTo(out) }
+                        out.flush()
                     }
                     written = true
                     results.add(
@@ -731,6 +744,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
                         )
                     )
                 } catch (_: Throwable) {
+                    runCatching { DocumentsContract.deleteDocument(app.contentResolver, outUri) }
                     results.add(
                         ConversionResult(
                             fileName = outName, success = true,
@@ -757,10 +771,12 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
             }
             return true
         } else {
+            try { tempFile.delete() } catch (_: Exception) {}
+            val reason = genResult.exceptionOrNull()?.message ?: "PDF 生成失败"
             results.add(
                 ConversionResult(
                     fileName = outName, success = false,
-                    error = "PDF 生成失败"
+                    error = reason
                 )
             )
             return false
@@ -777,15 +793,33 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
     /** 用户在“保存位置”弹窗中选择后，把临时文件写入所选 Uri */
     fun resolvePendingSave(uri: Uri) {
         val pending = _uiState.value.pendingSaves.firstOrNull() ?: return
-        try {
-            getApplication<Application>().contentResolver.openOutputStream(uri)?.use { os ->
-                File(pending.tempFilePath).inputStream().use { it.copyTo(os) }
-            }
-            File(pending.tempFilePath).delete()
-        } catch (e: Exception) {
-            _uiState.update { it.copy(errorMessage = "保存失败：${e.message}") }
-        }
         _uiState.update { it.copy(pendingSaves = it.pendingSaves.drop(1)) }
+        viewModelScope.launch {
+            val resolver = getApplication<Application>().contentResolver
+            val tempFile = File(pending.tempFilePath)
+            val saveRes = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!tempFile.exists() || tempFile.length() <= 0L) {
+                        error("临时 PDF 文件不存在或为空")
+                    }
+                    val os = resolver.openOutputStream(uri)
+                        ?: error("无法打开目标文件写入流")
+                    os.use { out ->
+                        tempFile.inputStream().use { it.copyTo(out) }
+                        out.flush()
+                    }
+                }
+            }
+            try { tempFile.delete() } catch (_: Exception) {}
+            if (saveRes.isFailure) {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    runCatching { DocumentsContract.deleteDocument(resolver, uri) }
+                }
+                _uiState.update {
+                    it.copy(errorMessage = "保存失败：${saveRes.exceptionOrNull()?.message ?: "未知错误"}")
+                }
+            }
+        }
     }
 
     /** 在源文件所在目录创建同名 .pdf 的输出 Uri；失败返回 null（回退到让用户选择） */
@@ -862,7 +896,7 @@ class ConverterViewModel(application: Application) : AndroidViewModel(applicatio
         return try {
             getApplication<Application>().contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: ByteArray(0)
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             ByteArray(0)
         }
     }

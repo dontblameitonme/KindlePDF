@@ -154,16 +154,7 @@ fun InAppBrowserDialog(
                 }
             } catch (e: Exception) {
                 if (!isAuto) {
-                    val fallbackTitle = wv.title ?: pageTitle
-                    clippedUrls.add(activeUrl)
-                    onClipCurrentPage(activeUrl, rawResult, fallbackTitle)
-                    clippedCount++
-                    justClipped = true
-                    Toast.makeText(context, "已剪藏此页！", Toast.LENGTH_SHORT).show()
-                    coroutineScope.launch {
-                        delay(2000)
-                        justClipped = false
-                    }
+                    Toast.makeText(context, "剪藏解析失败：${e.message ?: "请重试"}", Toast.LENGTH_SHORT).show()
                 }
             }
         }

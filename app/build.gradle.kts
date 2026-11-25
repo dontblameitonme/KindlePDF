@@ -38,8 +38,8 @@ android {
         applicationId = "com.kindle.converter"
         minSdk = 24
         targetSdk = 34
-        versionCode = 17
-        versionName = "1.5.1"
+        versionCode = 18
+        versionName = "1.5.2"
     }
 
     buildTypes {

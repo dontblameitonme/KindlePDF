@@ -1,5 +1,6 @@
 package com.kindle.converter.ui.web
 
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,10 +36,19 @@ fun WebSettingsScreen(
     converterViewModel: ConverterViewModel? = null,
     modifier: Modifier = Modifier
 ) {
+    val uiState by viewModel.uiState.collectAsState()
     val scriptInfo by viewModel.scriptInfo.collectAsState(initial = null)
     val settings by viewModel.settings.collectAsState(initial = null)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(uiState.snackbar) {
+        uiState.snackbar?.let {
+            val duration = if (it.contains("失败")) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+            Toast.makeText(context, it, duration).show()
+            viewModel.consumeSnackbar()
+        }
+    }
 
     val exportSettingsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -46,11 +56,15 @@ fun WebSettingsScreen(
         if (uri != null) {
             scope.launch {
                 try {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                    val os = context.contentResolver.openOutputStream(uri)
+                        ?: error("无法打开目标文件写入流")
+                    os.use { out ->
                         viewModel.exportSettings(out)
+                        out.flush()
                     }
                     Toast.makeText(context, "配置已导出", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
+                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }
                     Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -136,11 +150,19 @@ fun WebSettingsScreen(
                     ) {
                         FilledTonalButton(
                             onClick = { viewModel.updateScriptFromUrl() },
+                            enabled = !uiState.isWorking,
                             shape = CircleShape,
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                             modifier = Modifier.height(32.dp)
                         ) {
-                            Text("更新", style = MaterialTheme.typography.labelMedium)
+                            if (uiState.isWorking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("更新", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                         IconButton(
                             onClick = { viewModel.resetScriptToAsset() },

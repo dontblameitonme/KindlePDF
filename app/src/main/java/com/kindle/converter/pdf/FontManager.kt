@@ -88,9 +88,11 @@ class FontManager(private val context: Context) {
         } ?: emptyList()
     }
 
+    @Synchronized
     fun getCurrentEntry(): FontEntry? = currentEntry
     fun getDisplayName(): String? = currentFontInfo?.name ?: SYSTEM_FONT_NAME
     fun hasFont(): Boolean = currentFontInfo != null || getSystemFontFile() != null
+    @Synchronized
     fun getCurrentFontInfo(): FontInfo? {
         if (currentFontInfo == null) {
             selectSystemDefaultFont()
@@ -205,6 +207,7 @@ class FontManager(private val context: Context) {
     }
 
     /** 选用系统默认字体 */
+    @Synchronized
     fun selectSystemDefaultFont(): Boolean {
         val file = getSystemFontFile() ?: return false
         return try {
@@ -221,6 +224,7 @@ class FontManager(private val context: Context) {
         }
     }
 
+    @Synchronized
     fun selectFont(id: String): Boolean {
         if (id == SYSTEM_FONT_ID) {
             return selectSystemDefaultFont()
@@ -265,6 +269,7 @@ class FontManager(private val context: Context) {
     }
 
     /** 启动时自动选中字体（上次使用的，否则系统默认字体） */
+    @Synchronized
     fun autoSelect(): Boolean {
         val fonts = listFonts()
         val curLastId = lastId
@@ -279,6 +284,7 @@ class FontManager(private val context: Context) {
     }
 
     /** 为输出 PDF 重新加载字体到目标文档 */
+    @Synchronized
     fun reloadFontForDocument(outputDoc: PDDocument): Pair<PDFont, PDFont?>? {
         val entry = currentEntry ?: run {
             if (selectSystemDefaultFont()) currentEntry else null

@@ -1,8 +1,15 @@
 package com.kindle.converter
 
 import com.kindle.converter.data.Block
+import com.kindle.converter.data.TypesettingParams
 import com.kindle.converter.parser.WebArticleParser
+import com.kindle.converter.typeset.LineBreaker
+import com.kindle.converter.typeset.Paginator
+import com.kindle.converter.typeset.TextMeasurer
+import com.kindle.converter.typeset.TypesettingEngine
 import com.kindle.converter.web.model.WebArticle
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -114,5 +121,32 @@ class WebArticleParserTest {
 
         val paragraphs = doc.blocks.filterIsInstance<Block.Paragraph>()
         assertEquals(2, paragraphs.size)
+    }
+
+    @Test
+    fun testWebArticleTypesettingProducesNonEmptyPages(): Unit = runBlocking {
+        val article = WebArticle(
+            url = "https://example.com/article",
+            title = "Sample Web Article",
+            contentHtml = """
+                <div id="readability-page-1">
+                    <p>First paragraph of the clipped web article with enough content to render properly.</p>
+                    <h2>Section One</h2>
+                    <p>Second paragraph with <strong>bold</strong> and <em>italic</em> spans.</p>
+                    <blockquote>A quoted sentence from the web page.</blockquote>
+                </div>
+            """.trimIndent()
+        )
+        val doc = parser.parse(listOf(article))
+        PDDocument().use { pdDoc ->
+            val font = PDType1Font.HELVETICA
+            val boldFont = PDType1Font.HELVETICA_BOLD
+            val measurer = TextMeasurer(font, boldFont)
+            val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
+            val result = engine.typesetWithDetails(doc, TypesettingParams())
+            assertTrue("Expected at least 1 typeset page", result.pages.isNotEmpty())
+            assertTrue("Expected non-empty page elements", result.pages.first().elements.isNotEmpty())
+            assertTrue("Expected TOC entries mapped", result.blockPageMap.isNotEmpty())
+        }
     }
 }

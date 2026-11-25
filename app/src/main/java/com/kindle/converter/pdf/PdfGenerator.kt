@@ -53,13 +53,25 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
         pages: List<PageLayout>,
         bookmarks: List<Bookmark> = emptyList(),
         outputFile: File
-    ): Boolean {
-        if (pages.isEmpty()) return false
+    ): Boolean = generateResult(pages, bookmarks, outputFile).isSuccess
+
+    /**
+     * Generate a PDF file from paginated layouts, returning a detailed [Result] on failure.
+     */
+    fun generateResult(
+        pages: List<PageLayout>,
+        bookmarks: List<Bookmark> = emptyList(),
+        outputFile: File
+    ): Result<Unit> {
+        if (pages.isEmpty()) {
+            return Result.failure(IllegalStateException("排版结果为空（0 页）"))
+        }
 
         val document = PDDocument()
-        try {
+        return try {
             // Reload font into the output document
-            val fontPair = fontManager.reloadFontForDocument(document) ?: return false
+            val fontPair = fontManager.reloadFontForDocument(document)
+                ?: return Result.failure(IllegalStateException("PDF 字体加载失败，请重新选择或导入字体"))
             val regularFont = fontPair.first
             val boldFont = fontPair.second ?: regularFont
 
@@ -86,11 +98,22 @@ class PdfGenerator(private val context: Context, private val fontManager: FontMa
                 setCreator("Kindle PDF")
             }
 
+            outputFile.parentFile?.mkdirs()
             document.save(outputFile.absolutePath)
-            return true
+            if (!outputFile.exists() || outputFile.length() <= 0L) {
+                Result.failure(IllegalStateException("PDF 文件写入为空（0 字节）"))
+            } else {
+                Result.success(Unit)
+            }
         } catch (t: Throwable) {
             t.printStackTrace()
-            return false
+            try { outputFile.delete() } catch (_: Throwable) {}
+            val ex = if (t is OutOfMemoryError) {
+                Exception("生成 PDF 时内存不足 (OutOfMemory)")
+            } else {
+                Exception(t.message ?: t::class.java.simpleName, t)
+            }
+            Result.failure(ex)
         } finally {
             try { document.close() } catch (_: Throwable) {}
         }

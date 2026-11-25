@@ -52,14 +52,12 @@ fun WebClipperScreen(
     modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsState()
+    val converterState by converterViewModel.uiState.collectAsState()
     val webSettings by viewModel.settings.collectAsState(initial = null)
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     var activeBrowserUrl by remember { mutableStateOf<String?>(null) }
-    var isExporting by remember { mutableStateOf(false) }
-    var exportStatusText by remember { mutableStateOf("") }
 
     val detectedUrlCount = remember(inputText) {
         if (inputText.isBlank()) 0
@@ -80,72 +78,30 @@ fun WebClipperScreen(
     val epubSaveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/epub+zip")
     ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                isExporting = true
-                exportStatusText = "正在生成 EPUB"
-                val tempFile = File(context.cacheDir, "web_${System.currentTimeMillis()}.epub")
-                val defaultTitle = state.bookTitle.ifBlank {
-                    state.links.firstOrNull { it.status is LinkStatus.Success }
-                        ?.let { (it.status as LinkStatus.Success).article.title }
-                        ?: "网页精选集"
-                }
-                val res = viewModel.exportEpub(title = defaultTitle, outputFile = tempFile)
-                if (res.isSuccess) {
-                    try {
-                        context.contentResolver.openOutputStream(uri)?.use { os ->
-                            tempFile.inputStream().use { it.copyTo(os) }
-                        }
-                        Toast.makeText(context, "EPUB 导出成功", Toast.LENGTH_SHORT).show()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(context, "EPUB 生成失败：${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
-                }
-                isExporting = false
-                exportStatusText = ""
-            }
-        }
+        if (uri != null) viewModel.resolvePendingExport(uri)
+        else viewModel.cancelPendingExport()
     }
 
     val pdfSaveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/pdf")
     ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                isExporting = true
-                exportStatusText = "正在转换 PDF"
-                val tempPdf = File(context.cacheDir, "web_kindle_${System.currentTimeMillis()}.pdf")
-                val fontManager = converterViewModel.fontManager
-                val selectedId = converterViewModel.uiState.value.selectedFontId
-                if (selectedId != null && fontManager.getCurrentEntry()?.id != selectedId) {
-                    fontManager.selectFont(selectedId)
-                }
-                val params = converterViewModel.uiState.value.params
-                val res = viewModel.exportKindlePdf(params, fontManager, tempPdf)
-                if (res.isSuccess) {
-                    val (file, pages) = res.getOrThrow()
-                    try {
-                        context.contentResolver.openOutputStream(uri)?.use { os ->
-                            file.inputStream().use { it.copyTo(os) }
-                        }
-                        Toast.makeText(context, "导出成功（$pages 页）", Toast.LENGTH_LONG).show()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(context, "PDF 生成失败：${res.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                }
-                isExporting = false
-                exportStatusText = ""
-            }
+        if (uri != null) viewModel.resolvePendingExport(uri)
+        else viewModel.cancelPendingExport()
+    }
+
+    LaunchedEffect(state.pendingExport?.tempFile?.absolutePath) {
+        val pending = state.pendingExport ?: return@LaunchedEffect
+        if (pending.isPdf) {
+            pdfSaveLauncher.launch(pending.suggestedName)
+        } else {
+            epubSaveLauncher.launch(pending.suggestedName)
         }
     }
 
     LaunchedEffect(state.snackbar) {
         state.snackbar?.let {
-            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            val duration = if (it.contains("失败") || it.contains("导出成功")) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+            Toast.makeText(context, it, duration).show()
             viewModel.consumeSnackbar()
         }
     }
@@ -349,7 +305,7 @@ fun WebClipperScreen(
         }
 
         // 4. 进度条（抓取/导出中）
-        if (state.isWorking || isExporting) {
+        if (state.isWorking) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -364,7 +320,7 @@ fun WebClipperScreen(
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                     Text(
-                        text = if (isExporting) exportStatusText else state.workingMessage.ifBlank { "提取中" },
+                        text = state.workingMessage.ifBlank { "提取中" },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
@@ -381,7 +337,7 @@ fun WebClipperScreen(
                     .padding(top = 6.dp, bottom = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val params = converterViewModel.uiState.value.params
+                val params = converterState.params
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -407,13 +363,18 @@ fun WebClipperScreen(
                 ) {
                     FilledTonalButton(
                         onClick = {
-                            val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
-                            epubSaveLauncher.launch("$defaultName.epub")
+                            val defaultTitle = state.bookTitle.ifBlank {
+                                viewModel.articles.firstOrNull()?.title ?: "网页精选集"
+                            }
+                            viewModel.prepareEpubExport(
+                                title = defaultTitle,
+                                disableFirstLineIndent = params.disableFirstLineIndent
+                            )
                         },
                         modifier = Modifier
                             .weight(1f)
                             .height(46.dp),
-                        enabled = !state.isWorking && !isExporting,
+                        enabled = !state.isWorking,
                         shape = CircleShape
                     ) {
                         Icon(Icons.Default.Book, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -423,13 +384,16 @@ fun WebClipperScreen(
 
                     Button(
                         onClick = {
-                            val defaultName = viewModel.articles.firstOrNull()?.title?.take(18) ?: "网页精选"
-                            pdfSaveLauncher.launch("$defaultName.pdf")
+                            viewModel.preparePdfExport(
+                                params = params,
+                                fontManager = converterViewModel.fontManager,
+                                selectedFontId = converterState.selectedFontId
+                            )
                         },
                         modifier = Modifier
                             .weight(1.45f)
                             .height(46.dp),
-                        enabled = !state.isWorking && !isExporting,
+                        enabled = !state.isWorking,
                         shape = CircleShape
                     ) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))

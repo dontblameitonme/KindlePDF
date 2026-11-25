@@ -1,6 +1,8 @@
 package com.kindle.converter.viewmodel
 
 import android.app.Application
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kindle.converter.KindleConverterApp
@@ -54,6 +56,13 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         webContainer = container
     )
 
+    data class PendingWebExport(
+        val tempFile: File,
+        val suggestedName: String,
+        val isPdf: Boolean,
+        val pageCount: Int = 0
+    )
+
     data class UiState(
         val links: List<LinkItem> = emptyList(),
         val isWorking: Boolean = false,
@@ -61,6 +70,7 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         val bookTitle: String = "",
         val previewArticle: WebArticle? = null,
         val snackbar: String? = null,
+        val pendingExport: PendingWebExport? = null,
         val generatedPdfFile: File? = null,
         val generatedEpubFile: File? = null,
     )
@@ -315,6 +325,168 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    /** 先在后台生成 PDF 临时文件，成功且非空后再触发系统保存弹窗，避免生成 0 KB 空文件 */
+    fun preparePdfExport(
+        params: TypesettingParams,
+        fontManager: FontManager,
+        selectedFontId: String?
+    ) {
+        if (_uiState.value.isWorking) return
+        val list = articles
+        if (list.isEmpty()) {
+            _uiState.update { it.copy(snackbar = "没有提取成功的文章") }
+            return
+        }
+        val rawTitle = _uiState.value.bookTitle.ifBlank {
+            list.firstOrNull()?.title ?: "网页精选"
+        }
+        val safeTitle = sanitizeFileName(rawTitle.take(24), "网页精选")
+        viewModelScope.launch {
+            _uiState.update { it.copy(isWorking = true, workingMessage = "正在转换 PDF") }
+            val tempPdf = File(getApplication<Application>().cacheDir, "web_kindle_${System.currentTimeMillis()}.pdf")
+            val res = withContext(Dispatchers.Default) {
+                if (selectedFontId != null && fontManager.getCurrentEntry()?.id != selectedFontId) {
+                    fontManager.selectFont(selectedFontId)
+                }
+                exportKindlePdf(params, fontManager, tempPdf)
+            }
+            if (res.isSuccess) {
+                val (file, pages) = res.getOrThrow()
+                _uiState.update {
+                    it.copy(
+                        isWorking = false,
+                        workingMessage = "",
+                        pendingExport = PendingWebExport(
+                            tempFile = file,
+                            suggestedName = "$safeTitle.pdf",
+                            isPdf = true,
+                            pageCount = pages
+                        )
+                    )
+                }
+            } else {
+                try { tempPdf.delete() } catch (_: Exception) {}
+                _uiState.update {
+                    it.copy(
+                        isWorking = false,
+                        workingMessage = "",
+                        snackbar = "PDF 生成失败：${res.exceptionOrNull()?.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
+    }
+
+    /** 先在后台生成 EPUB 临时文件，成功且非空后再触发系统保存弹窗 */
+    fun prepareEpubExport(
+        title: String,
+        disableFirstLineIndent: Boolean = false
+    ) {
+        if (_uiState.value.isWorking) return
+        val list = articles
+        if (list.isEmpty()) {
+            _uiState.update { it.copy(snackbar = "没有提取成功的文章") }
+            return
+        }
+        val rawTitle = title.ifBlank { list.firstOrNull()?.title ?: "网页精选集" }
+        val safeTitle = sanitizeFileName(rawTitle.take(24), "网页精选")
+        viewModelScope.launch {
+            _uiState.update { it.copy(isWorking = true, workingMessage = "正在生成 EPUB") }
+            val tempEpub = File(getApplication<Application>().cacheDir, "web_${System.currentTimeMillis()}.epub")
+            val res = exportEpub(
+                title = rawTitle,
+                outputFile = tempEpub,
+                disableFirstLineIndent = disableFirstLineIndent
+            )
+            if (res.isSuccess) {
+                val file = res.getOrThrow()
+                if (file.exists() && file.length() > 0L) {
+                    _uiState.update {
+                        it.copy(
+                            isWorking = false,
+                            workingMessage = "",
+                            pendingExport = PendingWebExport(
+                                tempFile = file,
+                                suggestedName = "$safeTitle.epub",
+                                isPdf = false
+                            )
+                        )
+                    }
+                } else {
+                    try { file.delete() } catch (_: Exception) {}
+                    _uiState.update {
+                        it.copy(
+                            isWorking = false,
+                            workingMessage = "",
+                            snackbar = "EPUB 生成失败：输出文件为空"
+                        )
+                    }
+                }
+            } else {
+                try { tempEpub.delete() } catch (_: Exception) {}
+                _uiState.update {
+                    it.copy(
+                        isWorking = false,
+                        workingMessage = "",
+                        snackbar = "EPUB 生成失败：${res.exceptionOrNull()?.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
+    }
+
+    /** 将已生成的临时导出文件写入用户选择的 SAF Uri；写入失败则清理空文档 */
+    fun resolvePendingExport(uri: Uri) {
+        val pending = _uiState.value.pendingExport ?: return
+        _uiState.update { it.copy(pendingExport = null, isWorking = true, workingMessage = "正在保存文件") }
+        viewModelScope.launch {
+            val resolver = getApplication<Application>().contentResolver
+            val saveRes = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!pending.tempFile.exists() || pending.tempFile.length() <= 0L) {
+                        error("临时导出文件不存在或为空")
+                    }
+                    val os = resolver.openOutputStream(uri)
+                        ?: error("无法打开目标文件写入流")
+                    os.use { out ->
+                        pending.tempFile.inputStream().use { input ->
+                            input.copyTo(out)
+                        }
+                        out.flush()
+                    }
+                }
+            }
+            try { pending.tempFile.delete() } catch (_: Exception) {}
+            if (saveRes.isSuccess) {
+                val msg = if (pending.isPdf) "导出成功（${pending.pageCount} 页）" else "EPUB 导出成功"
+                _uiState.update { it.copy(isWorking = false, workingMessage = "", snackbar = msg) }
+            } else {
+                // 清理 SAF 已创建的 0 字节占位文件，避免留下无用空文件
+                withContext(Dispatchers.IO) {
+                    runCatching { DocumentsContract.deleteDocument(resolver, uri) }
+                }
+                _uiState.update {
+                    it.copy(
+                        isWorking = false,
+                        workingMessage = "",
+                        snackbar = "保存失败：${saveRes.exceptionOrNull()?.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
+    }
+
+    /** 用户取消保存弹窗时清理临时文件 */
+    fun cancelPendingExport() {
+        val pending = _uiState.value.pendingExport ?: return
+        try { pending.tempFile.delete() } catch (_: Exception) {}
+        _uiState.update { it.copy(pendingExport = null) }
+    }
+
+    private fun sanitizeFileName(raw: String, fallback: String): String {
+        return raw.replace(Regex("[\\\\/:*?\"<>|\\r\\n]+"), "_").trim().ifBlank { fallback }
+    }
+
     /** 直接导出为 6 英寸 Kindle PDF */
     suspend fun exportKindlePdf(
         params: TypesettingParams,
@@ -324,9 +496,10 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
         try {
             val list = articles
             if (list.isEmpty()) return@withContext Result.failure(IllegalStateException("没有提取成功的文章"))
+            val webSettings = container.settingsRepository.settings.first()
             val firstUrl = list.first().url
             val rawDocument = buildDocument { url ->
-                ImageDownloader.download(url, refererHint = firstUrl)
+                if (webSettings.embedImages) ImageDownloader.download(url, refererHint = firstUrl) else null
             }
             val document = if (params.hideFrontToc) rawDocument.stripFrontMatterToc() else rawDocument
 
@@ -341,6 +514,9 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
             val engine = TypesettingEngine(measurer, LineBreaker(measurer), Paginator())
             val typesetResult = engine.typesetWithDetails(document, params)
             val pages = typesetResult.pages
+            if (pages.isEmpty()) {
+                return@withContext Result.failure(IllegalStateException("正文排版结果为空（0 页）"))
+            }
 
             // 构造 PDF 书签树
             val bookmarks = mutableListOf<PdfGenerator.Bookmark>()
@@ -349,14 +525,18 @@ class WebClipperViewModel(application: Application) : AndroidViewModel(applicati
                 bookmarks.add(PdfGenerator.Bookmark(entry.title, entry.level, pageIndex))
             }
 
+            outputFile.parentFile?.mkdirs()
             val generator = PdfGenerator(getApplication(), fontManager)
-            val success = generator.generate(pages, bookmarks, outputFile)
-            if (success && outputFile.exists()) {
+            val genResult = generator.generateResult(pages, bookmarks, outputFile)
+            if (genResult.isSuccess && outputFile.exists() && outputFile.length() > 0L) {
                 Result.success(outputFile to pages.size)
             } else {
-                Result.failure(Exception("PDF 生成失败"))
+                try { outputFile.delete() } catch (_: Exception) {}
+                val reason = genResult.exceptionOrNull()?.message ?: "PDF 文件生成失败或为空"
+                Result.failure(Exception(reason))
             }
         } catch (t: Throwable) {
+            try { outputFile.delete() } catch (_: Exception) {}
             val ex = if (t is OutOfMemoryError) Exception("排版生成 PDF 时内存不足 (OutOfMemory)") else (t as? Exception ?: Exception(t.message))
             Result.failure(ex)
         }
